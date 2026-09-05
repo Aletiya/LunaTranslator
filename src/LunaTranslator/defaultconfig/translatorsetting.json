@@ -70,103 +70,34 @@
 	},
 	"cdp_chatgpt": {
 		"args": {
-			"usewhich": 0,
 			"chromepath": "",
-			"debugport": 9222,
-			"target_url": "https://duckduckgo.com/?t=h_&q=hi&ia=chat",
-			"request_method": 0,
-			"checkneturlfunction": "url.includes(\"v1/chat\")",
-			"extracttextfunction": "thistext += chunk.message?chunk.message:\"\"",
-			"textarea_selector": "textarea",
-			"button_selector": "button[type=\"submit\"]",
-			"S": "",
-			"S2": "",
-			"usingstream": true,
-			"use_custom_prompt": false,
-			"custom_prompt": ""
+			"debugport": 9223,
+			"show_browser": true,
+			"custom_url": ""
 		},
 		"argstype": {
 			"chromepath": {
-				"rank": 2,
-				"name": "Chromium_路径",
+				"rank": 1,
+				"name": "Chromium Path",
 				"type": "file",
 				"dir": false
 			},
 			"debugport": {
-				"rank": 3,
-				"name": "端口号",
+				"rank": 2,
+				"name": "Debug Port",
 				"type": "intspin",
 				"min": 0,
-				"max": 1000000
+				"max": 65535
 			},
-			"usewhich": {
-				"rank": 1,
-				"type": "combo",
-				"name": "类型",
-				"list": [
-					"chatgpt",
-					"mirror"
-				]
-			},
-			"S2": {
-				"rank": 4,
-				"type": "split"
-			},
-			"target_url": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 10
-			},
-			"textarea_selector": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 14,
-				"name": "CSS selector for textarea"
-			},
-			"button_selector": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 15,
-				"name": "CSS selector for button"
-			},
-			"extracttextfunction": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 13,
-				"name": "Function2 (extract text in stream chunk)"
-			},
-			"checkneturlfunction": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 12,
-				"name": "Function1 (check if url is backend url)"
-			},
-			"request_method": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 11,
-				"type": "combo",
-				"list": [
-					"fetch",
-					"xhr"
-				]
-			},
-			"S": {
-				"refcombo": "usewhich",
-				"refcombo_i": 1,
-				"rank": 19,
-				"type": "split"
-			},
-			"usingstream": {
-				"rank": 20,
-				"name": "流式输出",
+			"show_browser": {
+				"rank": 3,
+				"name": "Show Browser Window",
 				"type": "switch"
 			},
-			"custom_prompt": {
-				"rank": 21,
-				"name": "自定义_promt",
-				"type": "multiline",
-				"refswitch": "use_custom_prompt"
+			"custom_url": {
+				"rank": 4,
+				"name": "Custom URL (Mirror)",
+				"type": "lineedit"
 			}
 		}
 	},
@@ -186,7 +117,7 @@
 					2
 				],
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"APP ID": {
 				"refcombo": "interface",
@@ -195,19 +126,19 @@
 					2
 				],
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"API Key": {
 				"refcombo": "interface",
 				"refcombo_i": 1,
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"Secret Key": {
 				"refcombo": "interface",
 				"refcombo_i": 1,
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"interface": {
 				"rank": 0,
@@ -228,7 +159,7 @@
 		"argstype": {
 			"Token": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -245,7 +176,7 @@
 				"refcombo": "usewhich",
 				"refcombo_i": 0,
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"DeepL-Auth-Key-2": {
 				"rank": 2,
@@ -253,7 +184,7 @@
 				"refcombo": "usewhich",
 				"refcombo_i": 1,
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"usewhich": {
 				"rank": 0,
@@ -274,7 +205,7 @@
 			"key": {
 				"name": "API key",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -285,7 +216,7 @@
 		"argstype": {
 			"key": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -302,11 +233,11 @@
 		"argstype": {
 			"Access Key ID": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"Secret Access Key": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -319,11 +250,11 @@
 		"argstype": {
 			"SecretId": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"SecretKey": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"Region": {
 				"type": "combo",
@@ -356,7 +287,7 @@
 		"argstype": {
 			"apikey": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -369,12 +300,12 @@
 			"APP_KEY": {
 				"name": "应用ID",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"APP_SECRET": {
 				"name": "应用密钥",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -388,12 +319,12 @@
 			"ak": {
 				"name": "Access Key Id",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"sk": {
 				"name": "Secret Access Key",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -482,7 +413,7 @@
 				"rank": 1,
 				"name": "API Key",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"model": {
 				"rank": 2,
@@ -672,7 +603,7 @@
 		"argstype": {
 			"key1": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -684,11 +615,11 @@
 		"argstype": {
 			"apiurl": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"apikey": {
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -701,12 +632,12 @@
 			"Access_Key": {
 				"name": "AccessKey ID",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			},
 			"SECRET_KEY": {
 				"name": "AccessKey Secret",
 				"type": "textlist",
-                "issecret": true
+				"issecret": true
 			}
 		}
 	},
@@ -825,6 +756,72 @@
 				"min": 0,
 				"max": 2,
 				"step": 0.01
+			}
+		}
+	},
+	"cdp_deepseek": {
+		"args": {
+			"chromepath": "",
+			"debugport": 9222,
+			"show_browser": true,
+			"custom_url": ""
+		},
+		"argstype": {
+			"chromepath": {
+				"rank": 1,
+				"name": "Chromium Path",
+				"type": "file",
+				"dir": false
+			},
+			"debugport": {
+				"rank": 2,
+				"name": "Debug Port",
+				"type": "intspin",
+				"min": 0,
+				"max": 65535
+			},
+			"show_browser": {
+				"rank": 3,
+				"name": "Show Browser Window",
+				"type": "switch"
+			},
+			"custom_url": {
+				"rank": 4,
+				"name": "Custom URL (Mirror)",
+				"type": "lineedit"
+			}
+		}
+	},
+	"cdp_gemini": {
+		"args": {
+			"chromepath": "",
+			"debugport": 9224,
+			"show_browser": true,
+			"custom_url": ""
+		},
+		"argstype": {
+			"chromepath": {
+				"rank": 1,
+				"name": "Chromium Path",
+				"type": "file",
+				"dir": false
+			},
+			"debugport": {
+				"rank": 2,
+				"name": "Debug Port",
+				"type": "intspin",
+				"min": 0,
+				"max": 65535
+			},
+			"show_browser": {
+				"rank": 3,
+				"name": "Show Browser Window",
+				"type": "switch"
+			},
+			"custom_url": {
+				"rank": 4,
+				"name": "Custom URL (Mirror)",
+				"type": "lineedit"
 			}
 		}
 	}

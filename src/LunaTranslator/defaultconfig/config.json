@@ -1533,6 +1533,20 @@
             "useproxy": false,
             "type": "free"
         },
+        "cdp_deepseek": {
+            "use": false,
+            "color": "blue",
+            "name": "Web DeepSeek",
+            "useproxy": false,
+            "type": "free"
+        },
+        "cdp_gemini": {
+            "use": false,
+            "color": "blue",
+            "name": "Web Gemini",
+            "useproxy": false,
+            "type": "free"
+        },
         "jb7": {
             "type": "offline",
             "use": false,

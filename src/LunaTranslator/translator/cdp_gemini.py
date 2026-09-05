@@ -1,5 +1,5 @@
 """
-OpenAI ChatGPT Web for LunaTranslator
+Google Gemini Web for LunaTranslator
 Contributed by Aletiya
 """
 
@@ -19,7 +19,7 @@ from language import Languages
 
 
 class TS(basetrans):
-    PROVIDER_KEY = "chatgpt"
+    PROVIDER_KEY = "gemini"
 
     def langmap(self):
         return Languages.createenglishlangmap()
@@ -27,8 +27,8 @@ class TS(basetrans):
     def init(self):
         # Load provider configuration and DOM selectors from cdp_selectors.json
         self.selectors = load_selectors(self.PROVIDER_KEY)
-        self.provider_name = self.selectors.get("name", "OpenAI ChatGPT Web")
-        self.profile_name = self.selectors.get("profile", "chatgpt_profile")
+        self.provider_name = self.selectors.get("name", "Google Gemini Web")
+        self.profile_name = self.selectors.get("profile", "gemini_profile")
         self.send_key_modifiers = self.selectors.get("send_key_modifiers", 0)
 
         self._update_target_endpoint()
