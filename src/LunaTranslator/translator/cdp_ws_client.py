@@ -1,668 +1,466 @@
-"""
-Stateless WebSocket and shared utilities for Chromium DevTools Protocol (CDP) translators.
-Provides:
-  - SimpleWebSocket: Zero-dependency raw WebSocket client.
-  - TranslationTask: Data class for queued translation tasks.
-  - CDPSession: Thread-safe CDP command execution and interaction shielding.
-  - Lifecycle: Win32 Toolhelp child PID tracking, dynamic port allocation, window visibility.
-  - Config: Centralized selector management from cdp_selectors.json.
-"""
-
 import os
 import sys
 import time
 import json
-import re
-import socket
-import struct
-import base64
-import urllib.request
-import urllib.parse
-import subprocess
+import collections
 import threading
+import urllib.parse
+from translator.basetranslator import basetrans, GptTextWithDict
+from language import Languages
+
+from translator.cdp_core import (
+    CDPSession,
+    TranslationTask,
+    load_selectors,
+    ensure_browser_launched,
+    connect_to_tab,
+    set_window_visibility,
+    kill_browser,
+    format_prompt,
+    clean_response,
+    SimpleWebSocket,
+    DEFAULT_SELECTORS,
+    diagnose_selectors,
+    get_browser_path,
+    get_free_port,
+    is_browser_alive_on_port,
+    find_browser_hwnds_by_pid_or_port,
+    get_child_pids,
+    get_pid_from_port,
+    SHIELD_JS,
+    UNSHIELD_JS,
+)
 
 
-# --- SimpleWebSocket - minimal pure Python WebSocket client ---
-class SimpleWebSocket:
-    def __init__(self, url: str, timeout: float = 30.0):
-        self.url = url
-        self.timeout = timeout
-        self.sock = None
-        self._connect()
+class BaseCDPTranslator(basetrans):
+    PROVIDER_KEY = ""
 
-    def _connect(self):
-        parsed = urllib.parse.urlparse(self.url)
-        host = parsed.hostname
-        port = parsed.port or (443 if parsed.scheme in ("wss", "https") else 80)
-        path = parsed.path or "/"
-        if parsed.query:
-            path += f"?{parsed.query}"
+    def langmap(self):
+        return Languages.createenglishlangmap()
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect((host, port))
+    def init(self):
+        self.selectors = load_selectors(self.PROVIDER_KEY)
+        self.provider_name = self.selectors.get("name", self.PROVIDER_KEY.capitalize() + " Web")
+        self.profile_name = self.selectors.get("profile", f"{self.PROVIDER_KEY}_profile")
+        self.send_key_modifiers = self.selectors.get("send_key_modifiers", 0)
 
-        if parsed.scheme in ("wss", "https"):
-            import ssl
-            context = ssl.create_default_context()
-            self.sock = context.wrap_socket(self.sock, server_hostname=host)
+        self._update_target_endpoint()
 
-        sec_key = base64.b64encode(os.urandom(16)).decode("ascii")
-        req = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            f"Upgrade: websocket\r\n"
-            f"Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {sec_key}\r\n"
-            f"Sec-WebSocket-Version: 13\r\n\r\n"
-        )
-        self.sock.sendall(req.encode("ascii"))
+        cfg_port = self.config.get("debugport")
+        self.debug_port = int(cfg_port) if cfg_port else self.selectors.get("default_port", 9222)
 
-        header_data = bytearray()
-        while b"\r\n\r\n" not in header_data:
-            chunk = self.sock.recv(1024)
-            if not chunk:
-                raise ConnectionResetError("Server closed connection during handshake.")
-            header_data.extend(chunk)
+        self.cdp = CDPSession(self.provider_name)
+        self.is_ready = False
+        self.browser_proc = None
+        self.task_queue = collections.deque()
+        self.queue_lock = threading.Lock()
+        self.max_queue_size = 3
+        self._current_window_visible = None
+        self.queue_event = threading.Event()
+        self.worker_thread = threading.Thread(target=self._queue_worker, daemon=True)
+        self.worker_thread.start()
+        self.start_game_watcher()
 
-        headers_text = header_data.decode("latin1")
-        if " 101 " not in headers_text.splitlines()[0]:
-            raise ConnectionError(f"WebSocket upgrade failed: {headers_text.splitlines()[0]}")
-
-    def send(self, message: str):
-        payload = message.encode("utf-8")
-        length = len(payload)
-        header = bytearray([0x81])
-        if length <= 125:
-            header.append(length | 0x80)
-        elif length <= 65535:
-            header.append(126 | 0x80)
-            header.extend(struct.pack("!H", length))
+    def _update_target_endpoint(self):
+        custom = self.config.get("custom_url", "").strip()
+        if custom:
+            self.target_url = custom
+            parsed = urllib.parse.urlparse(custom)
+            self.target_domain = parsed.netloc or parsed.path
         else:
-            header.append(127 | 0x80)
-            header.extend(struct.pack("!Q", length))
+            self.target_url = self.selectors.get("url", "")
+            self.target_domain = self.selectors.get("domain", "")
 
-        mask = os.urandom(4)
-        header.extend(mask)
-        masked_payload = bytearray(length)
-        for i in range(length):
-            masked_payload[i] = payload[i] ^ mask[i % 4]
-
-        self.sock.sendall(header + masked_payload)
-
-    def recv(self) -> str:
-        while True:
-            b1, b2 = self._read_exact(2)
-            opcode = b1 & 0x0F
-            if opcode == 0x8:
-                raise ConnectionResetError("Remote server sent Close frame.")
-
-            payload_len = b2 & 0x7F
-            if payload_len == 126:
-                payload_len = struct.unpack("!H", self._read_exact(2))[0]
-            elif payload_len == 127:
-                payload_len = struct.unpack("!Q", self._read_exact(8))[0]
-
-            is_masked = bool(b2 & 0x80)
-            if is_masked:
-                mask = self._read_exact(4)
-                data = bytearray(self._read_exact(payload_len))
-                for i in range(payload_len):
-                    data[i] ^= mask[i % 4]
-                payload_bytes = bytes(data)
-            else:
-                payload_bytes = self._read_exact(payload_len)
-
-            if opcode == 0x9:
-                pong = bytearray([0x8A, 0x00])
-                self.sock.sendall(pong)
-                continue
-            elif opcode == 0xA:
-                continue
-            elif opcode in (0x1, 0x0):
-                return payload_bytes.decode("utf-8", errors="replace")
-
-    def _read_exact(self, num_bytes: int) -> bytes:
-        data = bytearray()
-        while len(data) < num_bytes:
-            chunk = self.sock.recv(num_bytes - len(data))
-            if not chunk:
-                raise ConnectionResetError("Socket closed prematurely while reading data.")
-            data.extend(chunk)
-        return bytes(data)
-
-    def close(self):
-        if self.sock:
+    def warmup(self):
+        if not getattr(self, "using", True):
+            return
+        def _bg():
             try:
-                self.sock.sendall(bytearray([0x88, 0x00]))
-                self.sock.close()
+                if not getattr(self, "using", True):
+                    return
+                self.connect_cdp()
+                self.wait_for_ready_and_login(timeout_sec=15)
             except Exception:
                 pass
-            finally:
-                self.sock = None
+        threading.Thread(target=_bg, daemon=True).start()
 
-
-# --- TranslationTask - shared data class ---
-class TranslationTask:
-    """Data class representing a single translation request in the queue."""
-    def __init__(self, content: str, srclang_obj, tgtlang_obj):
-        self.content = content
-        self.srclang_obj = srclang_obj
-        self.tgtlang_obj = tgtlang_obj
-        self.done_event = threading.Event()
-        self.result = ""
-        self.cancelled = False
-
-
-# --- Shield JS constants (DOM interaction lock) ---
-SHIELD_JS = (
-    "(() => {"
-    "let shield = document.getElementById('__cdp_shield__');"
-    "if (!shield) {"
-    "shield = document.createElement('div');"
-    "shield.id = '__cdp_shield__';"
-    "shield.style.cssText = 'position:fixed!important;top:0!important;left:0!important;"
-    "width:100vw!important;height:100vh!important;z-index:2147483647!important;"
-    "background:rgba(0,0,0,0.001)!important;cursor:wait!important;"
-    "pointer-events:all!important;user-select:none!important;';"
-    "document.documentElement.appendChild(shield);"
-    "}"
-    "})()"
-)
-
-UNSHIELD_JS = (
-    "(() => {"
-    "const shield = document.getElementById('__cdp_shield__');"
-    "if (shield) shield.remove();"
-    "})()"
-)
-
-
-# --- Process Tree Tracking (Win32 Toolhelp API) ---
-def get_child_pids(parent_pid: int) -> set:
-    """Retrieve child process IDs using Win32 Toolhelp API (fast <1ms, non-deprecated)."""
-    pids = {parent_pid}
-    if sys.platform != "win32":
-        return pids
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.windll.kernel32
-        TH32CS_SNAPPROCESS = 0x00000002  # Snapshot all processes
-        h_snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if h_snap == -1 or h_snap == 0:
-            return pids
-
-        class PROCESSENTRY32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_void_p),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", wintypes.LONG),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", ctypes.c_char * 260),
-            ]
-
-        entry = PROCESSENTRY32()
-        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
-        if kernel32.Process32First(h_snap, ctypes.byref(entry)):
-            entries = []
+    def start_game_watcher(self):
+        def _watch():
+            import gobject
+            warmed_gameuid = None
             while True:
-                entries.append((entry.th32ProcessID, entry.th32ParentProcessID))
-                if not kernel32.Process32Next(h_snap, ctypes.byref(entry)):
-                    break
-            kernel32.CloseHandle(h_snap)
-
-            # Traverse down process tree for grandchildren
-            changed = True
-            while changed:
-                changed = False
-                for pid, ppid in entries:
-                    if ppid in pids and pid not in pids:
-                        pids.add(pid)
-                        changed = True
-    except Exception:
-        pass
-    return pids
-
-
-# --- OS / Browser utility functions ---
-def get_browser_path(custom: str = "") -> str:
-    candidates = [
-        custom,
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    ]
-    for p in candidates:
-        if p and os.path.exists(p):
-            return p
-    return "chrome.exe"
-
-
-def get_pid_from_port(port: int) -> int:
-    try:
-        out = subprocess.check_output("netstat -ano", shell=True).decode()
-        port_str = f":{port}"
-        for line in out.splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 5 and "LISTENING" in parts:
-                local_addr = parts[1]
-                if local_addr.endswith(port_str):
-                    return int(parts[-1])
-    except Exception:
-        pass
-    return None
-
-
-def find_browser_hwnds_by_pid_or_port(pid: int = None, port: int = None, provider_name: str = "") -> list:
-    if sys.platform != "win32":
-        return []
-    try:
-        import ctypes
-        from ctypes import wintypes
-        user32 = ctypes.windll.user32
-
-        target_pid = pid or (get_pid_from_port(port) if port else None)
-        pids = set()
-        if target_pid:
-            
-            pids = get_child_pids(target_pid)
-
-        found_hwnds = []
-        kw = provider_name.lower() if provider_name else ""
-
-        def enum_windows_callback(hwnd, extra):
-            matched = False
-            if pids:
-                w_pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
-                if w_pid.value in pids:
-                    buf = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(hwnd, buf, 256)
-                    title_len = user32.GetWindowTextLengthW(hwnd)
-                    # Only match real top-level browser window (Chrome_WidgetWin_1 with title)
-                    # Never match Chrome_WidgetWin_0 (hidden black dummy/GPU context window)
-                    if buf.value == "Chrome_WidgetWin_1" and title_len > 0:
-                        matched = True
-            elif kw:
-                length = user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buff = ctypes.create_unicode_buffer(length + 1)
-                    user32.GetWindowTextW(hwnd, buff, length + 1)
-                    if kw in buff.value.lower():
-                        matched = True
-            if matched and hwnd not in found_hwnds:
-                found_hwnds.append(hwnd)
-            return True
-
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(EnumWindowsProc(enum_windows_callback), 0)
-        return found_hwnds
-    except Exception:
-        return []
-
-
-def set_window_visibility(provider_name: str = "", visible: bool = True, pid: int = None, port: int = None):
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        hwnds = find_browser_hwnds_by_pid_or_port(pid=pid, port=port, provider_name=provider_name)
-        SW_HIDE = 0
-        SW_SHOWNOACTIVATE = 4
-        cmd = SW_SHOWNOACTIVATE if visible else SW_HIDE
-        for hwnd in hwnds:
-            user32.ShowWindow(hwnd, cmd)
-    except Exception:
-        pass
-
-
-def kill_browser(pid: int = None, port: int = None):
-    target_pid = pid or (get_pid_from_port(port) if port else None)
-    if target_pid:
-        try:
-            subprocess.run(f"taskkill /F /PID {target_pid} /T", shell=True, capture_output=True)
-        except Exception:
-            pass
-
-
-def clean_response(text: str) -> str:
-    if not text:
-        return ""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"^```[a-zA-Z]*\n?", "", text.strip())
-    text = re.sub(r"\n?```$", "", text.strip())
-    text = text.strip()
-    if (text.startswith('"') and text.endswith('"')) or (text.startswith('“') and text.endswith('”')):
-        text = text[1:-1].strip()
-    return text
-
-
-def format_prompt(content: str, srclang_obj, tgtlang_obj) -> str:
-    src_name = getattr(srclang_obj, "name", "Japanese")
-    tgt_name = getattr(tgtlang_obj, "name", "Vietnamese")
-    return (
-        f"You are an expert Visual Novel translator. Translate the following text from {src_name} to {tgt_name}: "
-        f"「{content}」. Output ONLY the direct translation text without quotation marks, notes, or explanations."
-    )
-
-
-# --- Dynamic Port Allocation ---
-def is_browser_alive_on_port(port: int) -> bool:
-    """Check if a CDP browser is already listening on this port."""
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
-        with urllib.request.urlopen(req, timeout=0.8) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
-def get_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
-    """
-    Return preferred_port if free or already running our browser.
-    Otherwise, automatically probe and return next available free port to avoid conflicts.
-    """
-    if is_browser_alive_on_port(preferred_port):
-        return preferred_port
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, preferred_port))
-            return preferred_port
-        except OSError:
-            pass
-
-    # Preferred port is occupied by another app; find next free port
-    for p in range(preferred_port + 1, preferred_port + 50):
-        if is_browser_alive_on_port(p):
-            continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind((host, p))
-                return p
-            except OSError:
-                continue
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
-
-
-# --- Browser lifecycle helpers ---
-def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str = "") -> tuple:
-    """
-    Launch Chrome on an available debug port.
-    Returns (proc, actual_port).
-    """
-    actual_port = get_free_port(debug_port)
-    if is_browser_alive_on_port(actual_port):
-        return None, actual_port
-
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile"))
-    os.makedirs(base_dir, exist_ok=True)
-    profile_path = os.path.join(base_dir, profile_name)
-    os.makedirs(profile_path, exist_ok=True)
-
-    browser_exe = get_browser_path(chrome_path)
-    cmd = [
-        browser_exe,
-        f"--remote-debugging-port={actual_port}",
-        f"--user-data-dir={profile_path}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-restore-session-state",
-        "about:blank"
-    ]
-    # 0x00000008: DETACHED_PROCESS to run browser independently
-    flags = 0x00000008 if sys.platform == "win32" else 0
-    proc = subprocess.Popen(cmd, creationflags=flags)
-
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        if is_browser_alive_on_port(actual_port):
-            return proc, actual_port
-        time.sleep(0.5)
-    return proc, actual_port
-
-
-def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
-    """Find or create a tab for target_domain. Returns webSocketDebuggerUrl."""
-    target_tab = None
-    start_wait = time.time()
-
-    while time.time() - start_wait < 10:
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/list")
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                tabs = json.loads(resp.read().decode("utf-8"))
-
-            page_tabs = [t for t in tabs if t.get("type") == "page"]
-
-            matched_tabs = [t for t in page_tabs if target_domain in t.get("url", "")]
-            if matched_tabs:
-                target_tab = matched_tabs[0]
-                for extra in page_tabs:
-                    if extra.get("id") != target_tab.get("id"):
-                        try:
-                            urllib.request.urlopen(
-                                f"http://127.0.0.1:{debug_port}/json/close/{extra['id']}", timeout=1.0
-                            )
-                        except Exception:
-                            pass
-                break
-
-            if page_tabs:
-                target_tab = page_tabs[0]
-                ws_url = target_tab.get("webSocketDebuggerUrl")
-                if ws_url:
-                    temp_ws = SimpleWebSocket(ws_url)
-                    temp_ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
-                    temp_ws.close()
-                for extra in page_tabs[1:]:
-                    try:
-                        urllib.request.urlopen(
-                            f"http://127.0.0.1:{debug_port}/json/close/{extra['id']}", timeout=1.0
-                        )
-                    except Exception:
-                        pass
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-    if not target_tab:
-        raise RuntimeError(f"Could not locate a browser tab for {target_domain}")
-
-    ws_url = target_tab.get("webSocketDebuggerUrl")
-    if not ws_url:
-        raise RuntimeError(f"Browser tab lacks webSocketDebuggerUrl for {target_domain}")
-
-    return ws_url
-
-
-def close_duplicate_tabs(debug_port: int, keep_tab_id: str):
-    """Close any extra page tabs except keep_tab_id."""
-    if not keep_tab_id:
-        return
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/list")
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
-            all_tabs = json.loads(resp.read().decode("utf-8"))
-        for t in all_tabs:
-            if t.get("type") == "page" and t.get("id") != keep_tab_id:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{debug_port}/json/close/{t['id']}", timeout=1.0
-                )
-    except Exception:
-        pass
-
-
-# --- Selectors & Diagnostics ---
-DEFAULT_SELECTORS = {
-    "chatgpt": {
-        "name": "ChatGPT Web",
-        "domain": "chatgpt.com",
-        "url": "https://chatgpt.com/",
-        "profile": "chatgpt_profile",
-        "default_port": 9223,
-        "input_selector": "#prompt-textarea, [contenteditable='true'], textarea",
-        "send_btn_selector": "button[data-testid='send-button'], button[aria-label*='Send' i], button[type='submit']",
-        "stop_btn_selector": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
-        "msg_selector": "[data-message-author-role='assistant'], article [data-message-author-role='assistant']",
-        "send_key_modifiers": 0
-    },
-    "gemini": {
-        "name": "Gemini Web",
-        "domain": "gemini.google.com",
-        "url": "https://gemini.google.com/app",
-        "profile": "gemini_profile",
-        "default_port": 9224,
-        "input_selector": ".ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']",
-        "send_btn_selector": ".send-button-container button, button[aria-label*='Send message' i], button.send-button",
-        "stop_btn_selector": "button[aria-label*='Stop' i], .stop-button, mat-icon[data-mat-icon-name='stop']",
-        "msg_selector": "model-response, [class*='model-response'], message-content",
-        "send_key_modifiers": 2
-    },
-    "deepseek": {
-        "name": "DeepSeek Web",
-        "domain": "chat.deepseek.com",
-        "url": "https://chat.deepseek.com/",
-        "profile": "deepseek_profile",
-        "default_port": 9222,
-        "input_selector": "textarea.chat-input, textarea[placeholder*='DeepSeek'], textarea",
-        "send_btn_selector": "div[class*='ds-button--circle'], div[class*='send-button'], .ds-icon-button, button[type='submit']",
-        "stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i], div[class*='stop']",
-        "msg_selector": ".ds-markdown, article",
-        "send_key_modifiers": 0
-    }
-}
-
-
-def load_selectors(provider_key: str) -> dict:
-    """Load selectors from defaultconfig/cdp_selectors.json with fallback defaults."""
-    cfg_path = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "defaultconfig", "cdp_selectors.json"
-    ))
-    if os.path.exists(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                all_cfg = json.load(f)
-                if provider_key in all_cfg:
-                    return all_cfg[provider_key]
-        except Exception:
-            pass
-    return DEFAULT_SELECTORS.get(provider_key, {})
-
-
-def diagnose_selectors(cdp_session, selectors: dict) -> dict:
-    """Self-check/diagnostic helper: verifies if current webpage elements match selectors."""
-    report = {}
-    for key in ("input_selector", "send_btn_selector", "msg_selector"):
-        sel = selectors.get(key, "")
-        if sel:
-            found = cdp_session.evaluate_js(f"Boolean(document.querySelector({json.dumps(sel)}))")
-            report[key] = bool(found)
-    return report
-
-
-# --- CDPSession - thread-safe CDP command wrapper ---
-class CDPSession:
-    """Manages a single CDP WebSocket connection with thread-safe command execution."""
-
-    def __init__(self, provider_name: str = ""):
-        self.provider_name = provider_name
-        self.ws = None
-        self._msg_id = 0
-        self._lock = threading.Lock()
-
-    def connect(self, ws_url: str, timeout: float = 30):
-        self.disconnect()
-        self.ws = SimpleWebSocket(ws_url, timeout=timeout)
-        self.execute("Page.enable")
-        self.execute("Runtime.enable")
-        time.sleep(0.3)
-
-    def disconnect(self):
-        with self._lock:
-            if self.ws:
                 try:
-                    self.ws.close()
+                    if not getattr(self, "using", True):
+                        time.sleep(2.0)
+                        continue
+                    current_game = getattr(gobject.base, "gameuid", None) or getattr(gobject.base, "hwnd", None)
+                    if current_game and current_game != warmed_gameuid:
+                        warmed_gameuid = current_game
+                        self.warmup()
+                    elif not current_game:
+                        warmed_gameuid = None
                 except Exception:
                     pass
-                self.ws = None
+                time.sleep(1.0)
+        threading.Thread(target=_watch, daemon=True).start()
 
-    @property
-    def connected(self) -> bool:
-        return self.ws is not None
+    def close_browser(self):
+        if not self.cdp.connected and not self.browser_proc:
+            return
+        try:
+            if self.cdp.is_alive(self.debug_port):
+                self.cdp.execute("Browser.close", timeout=2.0)
+        except Exception:
+            pass
+        self.cdp.disconnect()
+        self.is_ready = False
+        proc_pid = getattr(self.browser_proc, "pid", None)
+        kill_browser(pid=proc_pid, port=self.debug_port)
+        self.browser_proc = None
+        self._current_window_visible = None
 
-    def execute(self, method: str, params: dict = None, timeout: float = 25.0) -> dict:
-        """Send a CDP command and wait for its response under lock (thread-safe)."""
-        with self._lock:
-            if not self.ws:
-                raise ConnectionResetError(f"CDP WebSocket for {self.provider_name} is not connected.")
-            self._msg_id += 1
-            call_id = self._msg_id
-            cmd = {"id": call_id, "method": method, "params": params or {}}
-            self.ws.send(json.dumps(cmd))
-            start_t = time.time()
-            while time.time() - start_t < timeout:
-                raw = self.ws.recv()
-                if not raw:
-                    continue
-                data = json.loads(raw)
-                if data.get("id") == call_id:
-                    if "error" in data:
-                        raise RuntimeError(f"CDP Error ({method}): {data['error']}")
-                    return data.get("result", {})
-            raise TimeoutError(f"CDP call {method} timed out on {self.provider_name}.")
+    def __del__(self):
+        try:
+            self.close_browser()
+        except Exception:
+            pass
 
-    def evaluate_js(self, expression: str, await_promise: bool = False):
-        for _ in range(6):
+    def connect_cdp(self):
+        if self.cdp.is_alive(self.debug_port):
+            return
+        proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""))
+        self.debug_port = port
+        if proc:
+            self.browser_proc = proc
+        ws_url = connect_to_tab(self.debug_port, self.target_domain, self.target_url)
+        self.cdp.connect(ws_url)
+        for _ in range(12):
             try:
-                res = self.execute("Runtime.evaluate", {
-                    "expression": expression,
-                    "returnByValue": True,
-                    "awaitPromise": await_promise
-                })
-                val = res.get("result", {})
-                return val.get("value")
-            except Exception as e:
-                err_str = str(e).lower()
-                if "execution context" in err_str or "context was destroyed" in err_str or "-32000" in err_str:
-                    time.sleep(0.2)
+                cur_url = self.cdp.evaluate_js("window.location.href") or ""
+                if self.target_domain in cur_url:
+                    break
+                elif "about:blank" in cur_url or not cur_url:
+                    self.cdp.execute("Page.navigate", {"url": self.target_url})
+            except Exception:
+                pass
+            time.sleep(0.4)
+
+        target_visible = bool(self.config.get("show_browser", True))
+        proc_pid = getattr(self.browser_proc, "pid", None)
+        set_window_visibility(provider_name=self.provider_name, visible=target_visible, pid=proc_pid, port=self.debug_port)
+        self._current_window_visible = target_visible
+
+    def wait_for_ready_and_login(self, timeout_sec=25):
+        input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+        ready_js = (
+            "(() => {"
+            f"const el = document.querySelector({input_sel});"
+            "if (el) {"
+            "const s = window.getComputedStyle(el);"
+            "if (s.display !== 'none' && s.visibility !== 'hidden') return 'ready';"
+            "}"
+            "const url = window.location.href.toLowerCase();"
+            "if (url.includes('/login') || url.includes('/auth/') || url.includes('/sign_in')) return 'login_needed';"
+            "return 'waiting';"
+            "})()"
+        )
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            try:
+                status = self.cdp.evaluate_js(ready_js)
+                if status == "ready":
+                    self.is_ready = True
+                    self.cdp.evaluate_js(
+                        "(() => {"
+                        f"const el = document.querySelector({input_sel});"
+                        "if (el) {"
+                        "if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = '';"
+                        "else el.innerHTML = '<p><br></p>';"
+                        "el.dispatchEvent(new Event('input', { bubbles: true }));"
+                        "}"
+                        "})()"
+                    )
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def wait_until_idle(self, timeout=6.0):
+        stop_sel_val = self.selectors.get("stop_btn_selector", "")
+        if not stop_sel_val:
+            return True
+        stop_sel = json.dumps(stop_sel_val)
+        stop_js = f"Boolean(document.querySelector({stop_sel}))"
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                if not self.cdp.evaluate_js(stop_js):
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.3)
+        return True
+
+    def _queue_worker(self):
+        while True:
+            if not self.using:
+                if self.cdp.connected or self.browser_proc:
+                    self.close_browser()
+                while not self.using:
+                    time.sleep(1.0)
+                continue
+
+            target_visible = bool(self.config.get("show_browser", True))
+            if self._current_window_visible is not None and self._current_window_visible != target_visible:
+                proc_pid = getattr(self.browser_proc, "pid", None)
+                set_window_visibility(provider_name=self.provider_name, visible=target_visible, pid=proc_pid, port=self.debug_port)
+                self._current_window_visible = target_visible
+
+            self.queue_event.wait(timeout=1.0)
+            self.queue_event.clear()
+            with self.queue_lock:
+                if self.task_queue:
+                    self.queue_event.set()
+
+            if not self.using:
+                continue
+
+            while True:
+                with self.queue_lock:
+                    task = self.task_queue.popleft() if self.task_queue else None
+                if not task:
+                    break
+                if task.cancelled:
+                    task.done_event.set()
                     continue
-                raise
-        return None
 
-    def is_alive(self, debug_port: int) -> bool:
-        if not self.ws:
-            return False
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/version")
-            with urllib.request.urlopen(req, timeout=0.8) as resp:
-                if resp.status != 200:
-                    return False
-            return self.evaluate_js("1+1") == 2
-        except Exception:
-            return False
+                self.cdp.disable_interaction()
+                try:
+                    if not self.cdp.is_alive(self.debug_port):
+                        self.cdp.disconnect()
+                        self.is_ready = False
+                        try:
+                            self.connect_cdp()
+                        except Exception as e:
+                            print(f"[{self.provider_name}] Connect error: {e}")
+                    if not self.is_ready:
+                        try:
+                            self.wait_for_ready_and_login(timeout_sec=25)
+                        except Exception as e:
+                            print(f"[{self.provider_name}] Not ready: {e}")
+                    self.wait_until_idle()
+                    if task.cancelled:
+                        continue
+                    task.result = self._do_translate(task.content, task.srclang_obj, task.tgtlang_obj)
+                except Exception as e:
+                    print(f"[{self.provider_name}] Worker error: {e}")
+                    task.result = ""
+                finally:
+                    task.done_event.set()
+                    with self.queue_lock:
+                        if not self.task_queue:
+                            self.cdp.enable_interaction()
 
-    def disable_interaction(self):
-        try:
-            self.evaluate_js(SHIELD_JS)
-        except Exception:
-            pass
 
-    def enable_interaction(self):
-        try:
-            self.evaluate_js(UNSHIELD_JS)
-        except Exception:
-            pass
+    def _focus_input(self):
+        input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+        js = (
+            "(() => {"
+            f"const el = document.querySelector({input_sel});"
+            "if (el) {"
+            "el.focus();"
+            "if (el.isContentEditable) {"
+            "const sel = window.getSelection();"
+            "if (sel) {"
+            "const r = document.createRange();"
+            "r.selectNodeContents(el);"
+            "r.collapse(false);"
+            "sel.removeAllRanges();"
+            "sel.addRange(r);"
+            "}"
+            "} else if (el.setSelectionRange) {"
+            "const len = el.value ? el.value.length : 0;"
+            "el.setSelectionRange(len, len);"
+            "}"
+            "return true;"
+            "}"
+            "return false;"
+            "})()"
+        )
+        for _ in range(5):
+            if self.cdp.evaluate_js(js):
+                return True
+            time.sleep(0.12)
+        return False
+
+    def _clear_input(self):
+        input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+        js = (
+            "(() => {"
+            f"const el = document.querySelector({input_sel});"
+            "if (el) {"
+            "if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = '';"
+            "else el.innerHTML = '<p><br></p>';"
+            "el.dispatchEvent(new Event('input', { bubbles: true }));"
+            "}"
+            "})()"
+        )
+        self.cdp.evaluate_js(js)
+
+    def _verify_input(self):
+        input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+        js = (
+            "(() => {"
+            f"const el = document.querySelector({input_sel});"
+            "if (!el) return false;"
+            "const val = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') ? el.value : (el.innerText || el.textContent);"
+            "return Boolean(val && val.trim().length > 0);"
+            "})()"
+        )
+        return self.cdp.evaluate_js(js)
+
+    def _send_message(self):
+        send_sel_val = self.selectors.get("send_btn_selector", "")
+        btn_clicked = False
+        if send_sel_val:
+            send_sel = json.dumps(send_sel_val)
+            send_js = (
+                "(() => {"
+                f"const btn = document.querySelector({send_sel});"
+                "if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true' && !btn.className.includes('disabled') && !btn.className.includes('floating')) {"
+                "btn.click();"
+                "return true;"
+                "}"
+                "return false;"
+                "})()"
+            )
+            btn_clicked = bool(self.cdp.evaluate_js(send_js))
+
+        time.sleep(0.12)
+        if not btn_clicked or self._verify_input():
+            self._focus_input()
+            self.cdp.execute("Input.dispatchKeyEvent", {
+                "type": "rawKeyDown",
+                "windowsVirtualKeyCode": 13,
+                "modifiers": self.send_key_modifiers,
+                "unmodifiedText": "\r",
+                "text": "\r"
+            })
+            self.cdp.execute("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "windowsVirtualKeyCode": 13,
+                "modifiers": self.send_key_modifiers,
+                "unmodifiedText": "\r",
+                "text": "\r"
+            })
+            time.sleep(0.15)
+            if self._verify_input():
+                self._focus_input()
+                self.cdp.execute("Input.dispatchKeyEvent", {
+                    "type": "rawKeyDown",
+                    "windowsVirtualKeyCode": 13,
+                    "modifiers": self.send_key_modifiers,
+                    "unmodifiedText": "\r",
+                    "text": "\r"
+                })
+                self.cdp.execute("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "windowsVirtualKeyCode": 13,
+                    "modifiers": self.send_key_modifiers,
+                    "unmodifiedText": "\r",
+                    "text": "\r"
+                })
+
+    def build_prompt(self, content: str, srclang_obj, tgtlang_obj) -> str:
+        if self.config.get("use_custom_prompt", False) and self.config.get("custom_prompt", "").strip():
+            return format_prompt(
+                content,
+                srclang_obj,
+                tgtlang_obj,
+                template=self.config.get("custom_prompt", "")
+            )
+        return format_prompt(content, srclang_obj, tgtlang_obj)
+
+    def _do_translate(self, content, srclang_obj, tgtlang_obj):
+        full_prompt = self.build_prompt(content, srclang_obj, tgtlang_obj)
+        mq = json.dumps(self.selectors.get("msg_selector", "article"))
+
+        prev_state = self.cdp.evaluate_js(
+            "(() => {"
+            f"const msgs = document.querySelectorAll({mq});"
+            "return { count: msgs.length, last_text: msgs.length > 0 ? msgs[msgs.length - 1].innerText.trim() : '' };"
+            "})()"
+        ) or {}
+        prev_count = prev_state.get("count", 0)
+        prev_text = prev_state.get("last_text", "")
+
+        self._focus_input()
+        self._clear_input()
+        time.sleep(0.08)
+        self.cdp.execute("Input.insertText", {"text": full_prompt})
+        time.sleep(0.2)
+        self._send_message()
+        time.sleep(1.0)
+
+        extract_js = (
+            "(() => {"
+            f"const msgs = document.querySelectorAll({mq});"
+            "return msgs.length > 0 ? msgs[msgs.length - 1].innerText.trim() : '';"
+            "})()"
+        )
+        return self._poll_response(extract_js, prev_count, prev_text)
+
+    def _poll_response(self, extract_js, prev_count, prev_text, max_wait=30):
+        mq = json.dumps(self.selectors.get("msg_selector", "article"))
+        stop_sel_val = self.selectors.get("stop_btn_selector", "")
+        stop_sel = json.dumps(stop_sel_val)
+        stop_js = f"Boolean(document.querySelector({stop_sel}))" if stop_sel_val else "false"
+
+        start = time.time()
+        last_text = ""
+        unchanged = 0
+        detected = False
+
+        while time.time() - start < max_wait:
+            is_gen = bool(self.cdp.evaluate_js(stop_js))
+            cur_text = (self.cdp.evaluate_js(extract_js) or "").strip()
+            cur_count = self.cdp.evaluate_js(f"document.querySelectorAll({mq}).length") or 0
+
+            if is_gen or (cur_count > prev_count) or (cur_text and cur_text != prev_text):
+                detected = True
+            if detected:
+                if cur_text and cur_text != prev_text:
+                    if cur_text == last_text:
+                        unchanged += 1
+                    else:
+                        unchanged = 0
+                        last_text = cur_text
+                    if not is_gen and unchanged >= 2:
+                        break
+                elif not is_gen and (time.time() - start > 8.0):
+                    break
+            if not detected and (time.time() - start > 8.0):
+                break
+            time.sleep(0.4)
+
+        raw = (self.cdp.evaluate_js(extract_js) or last_text or "").strip()
+        return "" if raw == prev_text else clean_response(raw)
+
+    def translate(self, content):
+        if isinstance(content, GptTextWithDict):
+            content = content.parsedtext or content.rawtext
+        content = str(content).strip() if content else ""
+        if not content:
+            return ""
+        task = TranslationTask(content, self.srclang_1, self.tgtlang_1)
+        with self.queue_lock:
+            while len(self.task_queue) >= self.max_queue_size:
+                dropped = self.task_queue.popleft()
+                dropped.cancelled = True
+                dropped.done_event.set()
+            self.task_queue.append(task)
+            self.queue_event.set()
+        if not task.done_event.wait(timeout=35.0):
+            print(f"[{self.provider_name}] Translation timed out for: {content[:50]}...")
+        return task.result
