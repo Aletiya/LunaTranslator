@@ -12,6 +12,99 @@ import subprocess
 import threading
 import collections
 
+_log_lock = threading.Lock()
+
+def cdp_log(msg: str):
+    """Thread-safe persistent logging to cache/cdp_debug.log."""
+    try:
+        import gobject
+        log_file = gobject.getcachedir("cdp_debug.log")
+    except Exception:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "cache"))
+        os.makedirs(base, exist_ok=True)
+        log_file = os.path.join(base, "cdp_debug.log")
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}\n"
+    try:
+        with _log_lock:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+_job_object = None
+
+def _init_job_object():
+    global _job_object
+    if sys.platform != "win32" or _job_object is not None:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        hJob = kernel32.CreateJobObjectW(None, None)
+        if not hJob:
+            return
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryLimit", ctypes.c_size_t),
+                ("PeakJobMemoryLimit", ctypes.c_size_t),
+            ]
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject(
+            hJob, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        _job_object = hJob
+    except Exception:
+        pass
+
+def assign_proc_to_job(proc):
+    if sys.platform != "win32" or not proc or not _job_object:
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        proc_handle = getattr(proc, "_handle", None)
+        if proc_handle:
+            kernel32.AssignProcessToJobObject(_job_object, proc_handle)
+    except Exception:
+        pass
+
+_init_job_object()
+
 
 class SimpleWebSocket:
     def __init__(self, url: str, timeout: float = 30.0):
@@ -81,8 +174,10 @@ class SimpleWebSocket:
         self.sock.sendall(header + masked_payload)
 
     def recv(self) -> str:
+        message_bytes = bytearray()
         while True:
             b1, b2 = self._read_exact(2)
+            fin = bool(b1 & 0x80)
             opcode = b1 & 0x0F
             if opcode == 0x8:
                 raise ConnectionResetError("Remote server sent Close frame.")
@@ -110,7 +205,12 @@ class SimpleWebSocket:
             elif opcode == 0xA:
                 continue
             elif opcode in (0x1, 0x0):
-                return payload_bytes.decode("utf-8", errors="replace")
+                message_bytes.extend(payload_bytes)
+                if fin:
+                    return message_bytes.decode("utf-8", errors="replace")
+            else:
+                if fin:
+                    return payload_bytes.decode("utf-8", errors="replace")
 
     def _read_exact(self, num_bytes: int) -> bytes:
         data = bytearray()
@@ -429,6 +529,8 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
             cmd.append(target_url)
         flags = 0x00000008 if sys.platform == "win32" else 0
         proc = subprocess.Popen(cmd, creationflags=flags)
+        assign_proc_to_job(proc)
+        cdp_log(f"Launched browser PID {getattr(proc, 'pid', None)} on port {debug_port}")
 
         start_time = time.time()
         while time.time() - start_time < 15:
@@ -609,10 +711,12 @@ class CDPSession:
 
     def connect(self, ws_url: str, timeout: float = 30):
         self.disconnect()
+        cdp_log(f"[{self.provider_name}] Connecting to tab CDP: {ws_url}")
         self.ws = SimpleWebSocket(ws_url, timeout=timeout)
         self.execute("Page.enable")
         self.execute("Runtime.enable")
         time.sleep(0.3)
+        cdp_log(f"[{self.provider_name}] CDP connected and enabled")
 
     def disconnect(self):
         with self._lock:
@@ -622,6 +726,7 @@ class CDPSession:
                 except Exception:
                     pass
                 self.ws = None
+                cdp_log(f"[{self.provider_name}] CDP disconnected")
 
     @property
     def connected(self) -> bool:
@@ -641,11 +746,16 @@ class CDPSession:
                 raw = self.ws.recv()
                 if not raw:
                     continue
-                data = json.loads(raw)
+                try:
+                    data = json.loads(raw)
+                except Exception as e:
+                    cdp_log(f"[{self.provider_name}] JSONDecodeError on raw frame: {e} | len={len(raw)}")
+                    continue
                 if data.get("id") == call_id:
                     if "error" in data:
                         raise RuntimeError(f"CDP Error ({method}): {data['error']}")
                     return data.get("result", {})
+            cdp_log(f"[{self.provider_name}] CDP call {method} timed out (call_id={call_id})")
             raise TimeoutError(f"CDP call {method} timed out on {self.provider_name}.")
 
     def evaluate_js(self, expression: str, await_promise: bool = False):

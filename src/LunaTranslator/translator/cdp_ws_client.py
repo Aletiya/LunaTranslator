@@ -8,7 +8,9 @@ import urllib.parse
 from translator.basetranslator import basetrans, GptTextWithDict
 from language import Languages
 
+import traceback
 from translator.cdp_core import (
+    cdp_log,
     close_duplicate_tabs,
     CDPSession,
     TranslationTask,
@@ -134,6 +136,7 @@ class BaseCDPTranslator(basetrans):
         with self._connect_lock:
             if self.cdp.is_alive(self.debug_port):
                 return
+            cdp_log(f"[{self.provider_name}] Launching/Connecting browser on port {self.debug_port}...")
             proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""), self.target_url)
             self.debug_port = port
             if proc:
@@ -250,25 +253,35 @@ class BaseCDPTranslator(basetrans):
                     continue
 
                 try:
+                    cdp_log(f"[{self.provider_name}] Processing task: {task.content[:40]}...")
                     if not self.cdp.is_alive(self.debug_port):
+                        cdp_log(f"[{self.provider_name}] CDP not alive on port {self.debug_port}, reconnecting...")
                         self.cdp.disconnect()
                         self.is_ready = False
                         try:
                             self.connect_cdp()
                         except Exception as e:
+                            cdp_log(f"[{self.provider_name}] Connect error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Connect error: {e}")
                     if not self.is_ready:
+                        cdp_log(f"[{self.provider_name}] Waiting for ready and login...")
                         try:
-                            self.wait_for_ready_and_login(timeout_sec=25)
+                            ready_ok = self.wait_for_ready_and_login(timeout_sec=25)
+                            cdp_log(f"[{self.provider_name}] wait_for_ready_and_login result: {ready_ok}")
                         except Exception as e:
+                            cdp_log(f"[{self.provider_name}] Not ready error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Not ready: {e}")
                     self.cdp.disable_interaction()
                     self.wait_until_idle()
                     if task.cancelled:
+                        cdp_log(f"[{self.provider_name}] Task was cancelled before execution")
                         continue
                     task.result = self._do_translate(task.content, task.srclang_obj, task.tgtlang_obj)
+                    cdp_log(f"[{self.provider_name}] Translation finished. Result len={len(task.result)}")
                 except Exception as e:
-                    print(f"[{self.provider_name}] Worker error: {e}")
+                    err_msg = f"[{self.provider_name}] Worker error: {e}\n{traceback.format_exc()}"
+                    cdp_log(err_msg)
+                    print(err_msg)
                     task.result = ""
                 finally:
                     task.done_event.set()
@@ -315,6 +328,9 @@ class BaseCDPTranslator(basetrans):
             "(() => {"
             f"const el = document.querySelector({input_sel});"
             "if (el) {"
+            "el.focus();"
+            "try { document.execCommand('selectAll', false, null); } catch(e) {}"
+            "try { document.execCommand('delete', false, null); } catch(e) {}"
             "if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = '';"
             "else el.innerHTML = '<p><br></p>';"
             "el.dispatchEvent(new Event('input', { bubbles: true }));"
@@ -422,26 +438,35 @@ class BaseCDPTranslator(basetrans):
 
         self._focus_input()
         self._clear_input()
-        time.sleep(0.08)
-        self.cdp.execute("Input.insertText", {"text": full_prompt})
-        time.sleep(0.15)
+        time.sleep(0.06)
+
+        # Universal standard browser text injection via document.execCommand('insertText')
+        input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+        insert_js = (
+            "(() => {"
+            f"const el = document.querySelector({input_sel});"
+            "if (!el) return false;"
+            "el.focus();"
+            "try { document.execCommand('selectAll', false, null); } catch(e) {}"
+            f"const ok = document.execCommand('insertText', false, {json.dumps(full_prompt)});"
+            "const val = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') ? el.value : (el.innerText || el.textContent);"
+            "if (!val || val.trim().length === 0) {"
+            f"    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = {json.dumps(full_prompt)};"
+            f"    else el.innerText = {json.dumps(full_prompt)};"
+            "    el.dispatchEvent(new Event('input', { bubbles: true }));"
+            "    el.dispatchEvent(new Event('change', { bubbles: true }));"
+            "}"
+            "return true;"
+            "})()"
+        )
+        self.cdp.evaluate_js(insert_js)
+        time.sleep(0.12)
+
         if not self._verify_input():
-            input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
-            inject_js = (
-                "(() => {"
-                f"const el = document.querySelector({input_sel});"
-                "if (el) {"
-                f"if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = {json.dumps(full_prompt)};"
-                f"else el.innerText = {json.dumps(full_prompt)};"
-                "el.dispatchEvent(new Event('input', { bubbles: true }));"
-                "el.dispatchEvent(new Event('change', { bubbles: true }));"
-                "return true;"
-                "}"
-                "return false;"
-                "})()"
-            )
-            self.cdp.evaluate_js(inject_js)
-            time.sleep(0.1)
+            cdp_log(f"[{self.provider_name}] execCommand input unverified, trying CDP Input.insertText fallback")
+            self._focus_input()
+            self.cdp.execute("Input.insertText", {"text": full_prompt})
+            time.sleep(0.15)
 
         self._send_message()
         time.sleep(1.0)
@@ -505,5 +530,7 @@ class BaseCDPTranslator(basetrans):
             self.task_queue.append(task)
             self.queue_event.set()
         if not task.done_event.wait(timeout=35.0):
-            print(f"[{self.provider_name}] Translation timed out for: {content[:50]}...")
+            msg = f"[{self.provider_name}] Translation timed out for: {content[:50]}..."
+            cdp_log(msg)
+            print(msg)
         return task.result
