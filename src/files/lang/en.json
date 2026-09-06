@@ -941,5 +941,8 @@
     "触发方式": "Trigger method",
     "中键点击": "Middle-click",
     "聚焦": "Focus.",
-    "锁定": "Locked"
+    "锁定": "Locked",
+    "• {content} or {sentence}: Original text to translate": "",
+    "• {srclang}: Source language name (e.g. Japanese)": "",
+    "• {tgtlang}: Target language name (e.g. Vietnamese)": ""
 }

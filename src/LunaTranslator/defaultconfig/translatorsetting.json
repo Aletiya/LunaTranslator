@@ -76,7 +76,13 @@
       "custom_url": "",
       "use_custom_prompt": false,
       "custom_prompt": "You are an expert Visual Novel translator. Translate the following text from {srclang} to {tgtlang}:\n「{content}」\nOutput ONLY the direct translation text without quotation marks, notes, or explanations.",
-      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)"
+      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)",
+      "use_custom_dom": false,
+      "dom_input_selector": "#prompt-textarea, [contenteditable='true']",
+      "dom_send_btn_selector": "button[data-testid='send-button'], button[aria-label*='Send' i], button[type='submit']",
+      "dom_msg_selector": "[data-message-author-role='assistant'], article [data-message-author-role='assistant']",
+      "dom_stop_btn_selector": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
+      "dom_tools": []
     },
     "argstype": {
       "chromepath": {
@@ -116,6 +122,27 @@
         "rank": 5.1,
         "name": "Variables Guide",
         "type": "label"
+      },
+      "dom_tools": {
+        "rank": 6,
+        "name": "Custom DOM",
+        "type": "custom",
+        "function": "dom_tools_widget"
+      },
+      "use_custom_dom": {
+        "hide": true
+      },
+      "dom_input_selector": {
+        "hide": true
+      },
+      "dom_send_btn_selector": {
+        "hide": true
+      },
+      "dom_msg_selector": {
+        "hide": true
+      },
+      "dom_stop_btn_selector": {
+        "hide": true
       }
     }
   },
@@ -785,7 +812,13 @@
       "custom_url": "",
       "use_custom_prompt": false,
       "custom_prompt": "You are an expert Visual Novel translator. Translate the following text from {srclang} to {tgtlang}:\n「{content}」\nOutput ONLY the direct translation text without quotation marks, notes, or explanations.",
-      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)"
+      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)",
+      "use_custom_dom": false,
+      "dom_input_selector": "textarea.chat-input, textarea[placeholder*='DeepSeek'], textarea",
+      "dom_send_btn_selector": "div[class*='ds-button--primary'][class*='ds-button--circle']:not([class*='floating']):not([class*='disabled']), div[class*='ds-button--primary']:not([class*='floating']), div[class*='send-button'], button[type='submit']",
+      "dom_msg_selector": ".ds-markdown, article",
+      "dom_stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i], div[class*='stop']",
+      "dom_tools": []
     },
     "argstype": {
       "chromepath": {
@@ -825,6 +858,27 @@
         "rank": 5.1,
         "name": "Variables Guide",
         "type": "label"
+      },
+      "dom_tools": {
+        "rank": 6,
+        "name": "Custom DOM",
+        "type": "custom",
+        "function": "dom_tools_widget"
+      },
+      "use_custom_dom": {
+        "hide": true
+      },
+      "dom_input_selector": {
+        "hide": true
+      },
+      "dom_send_btn_selector": {
+        "hide": true
+      },
+      "dom_msg_selector": {
+        "hide": true
+      },
+      "dom_stop_btn_selector": {
+        "hide": true
       }
     }
   },
@@ -836,7 +890,13 @@
       "custom_url": "",
       "use_custom_prompt": false,
       "custom_prompt": "You are an expert Visual Novel translator. Translate the following text from {srclang} to {tgtlang}:\n「{content}」\nOutput ONLY the direct translation text without quotation marks, notes, or explanations.",
-      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)"
+      "prompt_hint": "• {content} or {sentence}: Original text to translate\n• {srclang}: Source language name (e.g. Japanese)\n• {tgtlang}: Target language name (e.g. Vietnamese)",
+      "use_custom_dom": false,
+      "dom_input_selector": ".ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']",
+      "dom_send_btn_selector": ".send-button-container button, button[aria-label*='Send message' i], button.send-button",
+      "dom_msg_selector": "model-response, [class*='model-response'], message-content",
+      "dom_stop_btn_selector": "button[aria-label*='Stop' i], .stop-button, mat-icon[data-mat-icon-name='stop']",
+      "dom_tools": []
     },
     "argstype": {
       "chromepath": {
@@ -876,6 +936,27 @@
         "rank": 5.1,
         "name": "Variables Guide",
         "type": "label"
+      },
+      "dom_tools": {
+        "rank": 6,
+        "name": "Custom DOM",
+        "type": "custom",
+        "function": "dom_tools_widget"
+      },
+      "use_custom_dom": {
+        "hide": true
+      },
+      "dom_input_selector": {
+        "hide": true
+      },
+      "dom_send_btn_selector": {
+        "hide": true
+      },
+      "dom_msg_selector": {
+        "hide": true
+      },
+      "dom_stop_btn_selector": {
+        "hide": true
       }
     }
   }

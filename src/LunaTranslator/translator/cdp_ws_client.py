@@ -372,6 +372,15 @@ class BaseCDPTranslator(basetrans):
                     "text": "\r"
                 })
 
+    def _refresh_selectors(self):
+        base_sel = load_selectors(self.PROVIDER_KEY)
+        self.selectors = dict(base_sel)
+        if self.config.get("use_custom_dom", False):
+            for k in ["input_selector", "send_btn_selector", "msg_selector", "stop_btn_selector"]:
+                val = (self.config.get(f"dom_{k}") or "").strip()
+                if val:
+                    self.selectors[k] = val
+
     def build_prompt(self, content: str, srclang_obj, tgtlang_obj) -> str:
         if self.config.get("use_custom_prompt", False) and self.config.get("custom_prompt", "").strip():
             return format_prompt(
@@ -383,6 +392,7 @@ class BaseCDPTranslator(basetrans):
         return format_prompt(content, srclang_obj, tgtlang_obj)
 
     def _do_translate(self, content, srclang_obj, tgtlang_obj):
+        self._refresh_selectors()
         full_prompt = self.build_prompt(content, srclang_obj, tgtlang_obj)
         mq = json.dumps(self.selectors.get("msg_selector", "article"))
 

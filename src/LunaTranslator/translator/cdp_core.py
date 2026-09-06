@@ -449,8 +449,7 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         "--disable-renderer-backgrounding",
         "--disable-features=CalculateNativeWinOcclusion",
         "--disable-extensions",
-        "--disable-default-apps",
-        "about:blank"
+        "--disable-default-apps"
     ]
     flags = 0x00000008 if sys.platform == "win32" else 0
     proc = subprocess.Popen(cmd, creationflags=flags)
@@ -461,6 +460,16 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
             return proc, actual_port
         time.sleep(0.5)
     return proc, actual_port
+
+
+def _close_tab(debug_port: int, tab_id: str):
+    for method in ("PUT", "GET"):
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/close/{tab_id}", method=method)
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                return
+        except Exception:
+            pass
 
 
 def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
@@ -481,12 +490,7 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 target_tab = matched_tabs[0]
                 for extra in page_tabs:
                     if extra.get("id") != target_tab.get("id"):
-                        try:
-                            urllib.request.urlopen(
-                                f"http://127.0.0.1:{debug_port}/json/close/{extra['id']}", timeout=1.0
-                            )
-                        except Exception:
-                            pass
+                        _close_tab(debug_port, extra['id'])
                 break
 
             if page_tabs:
@@ -528,9 +532,7 @@ def close_duplicate_tabs(debug_port: int, keep_tab_id: str):
             all_tabs = json.loads(resp.read().decode("utf-8"))
         for t in all_tabs:
             if t.get("type") == "page" and t.get("id") != keep_tab_id:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{debug_port}/json/close/{t['id']}", timeout=1.0
-                )
+                _close_tab(debug_port, t['id'])
     except Exception:
         pass
 
@@ -708,3 +710,301 @@ class CDPSession:
             self.evaluate_js(UNSHIELD_JS)
         except Exception:
             pass
+
+try:
+    from qtsymbols import (
+        QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QPushButton,
+        QMessageBox, QApplication, QLabel, QLineEdit, Qt, QFileDialog
+    )
+except ImportError:
+    QWidget = object
+
+
+class DOMToolsWidget(QWidget):
+    """
+    All-in-one Collapsible Advanced DOM Self-Maintenance Panel:
+    - Collapsed by default when Custom DOM Mode is OFF.
+    - Expands when turned ON to show:
+      * Comprehensive DevTools F12 guideline & attribute tips
+      * 4 LineEdit inputs for selectors (pre-filled with defaults)
+      * 4 Action buttons (Save as Default, Reset Default, Copy JSON, Import JSON)
+    - Automatically updates translatorsetting config on dialog save.
+    """
+    def __init__(self, _dict, key, provider_key="chatgpt"):
+        super().__init__()
+        self._dict = _dict or {}
+        self._key = key
+        self.provider_key = provider_key
+
+        # Main vertical layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 4, 0, 4)
+        main_layout.setSpacing(8)
+
+        # --- Header row: Title + Switch ---
+        header_layout = QHBoxLayout()
+        header_label = QLabel("Advanced Mode (Self-Maintenance)")
+        header_label.setStyleSheet("font-weight: bold; font-size: 11pt;")
+
+        init_checked = bool(self._dict.get("use_custom_dom", False))
+        try:
+            from gui.usefulwidget import MySwitch
+            self.switch = MySwitch(sign=init_checked)
+        except Exception:
+            from qtsymbols import QCheckBox
+            self.switch = QCheckBox()
+            self.switch.setChecked(init_checked)
+        self.switch.setToolTip("Toggle to show/hide and enable custom DOM selectors")
+
+        header_layout.addWidget(header_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.switch)
+        main_layout.addLayout(header_layout)
+
+        # --- Subtitle hint ---
+        hint_label = QLabel("Enable this only if the AI website updated its UI layout and broke translations.")
+        hint_label.setStyleSheet("color: gray; font-size: 9pt;")
+        main_layout.addWidget(hint_label)
+
+        # --- Collapsible Container ---
+        self.container = QWidget()
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(0, 6, 0, 4)
+        container_layout.setSpacing(8)
+
+        # 1. Guideline Box
+        guide_text = (
+            "<b>📖 How to get CSS Selectors via DevTools (F12):</b><br>"
+            "1. Press <b>F12</b> on the web translation page (or Right-Click → <i>Inspect</i>).<br>"
+            "2. Click the <b>Inspect Element Icon</b> ↖ (top-left of DevTools, or Ctrl+Shift+C).<br>"
+            "3. Click on the target element (Input box, Send button, or AI reply bubble).<br>"
+            "4. In the HTML Elements tree, right-click the highlighted tag → <b>Copy → Copy selector</b>.<br>"
+            "5. Paste the selector into the corresponding field below.<br>"
+            "<i>• Tips: You can use IDs (<code>#id</code>), classes (<code>.class</code>), or attributes (<code>button[type='submit']</code>).</i><br>"
+            "<i>• Leave any field empty to fall back to built-in system default.</i>"
+        )
+        self.guide_label = QLabel(guide_text)
+        self.guide_label.setTextFormat(Qt.TextFormat.RichText)
+        self.guide_label.setWordWrap(True)
+        self.guide_label.setStyleSheet(
+            "padding: 8px 10px; border-radius: 5px; "
+            "border: 1px solid rgba(128, 128, 128, 0.35); "
+            "background-color: rgba(128, 128, 128, 0.08); font-size: 9pt;"
+        )
+        container_layout.addWidget(self.guide_label)
+
+        # 2. Form Layout for 4 Selectors
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 4, 0, 4)
+        form_layout.setSpacing(6)
+
+        from translator.cdp_core import DEFAULT_SELECTORS
+        p_sel = DEFAULT_SELECTORS.get(self.provider_key, {})
+
+        def_in = p_sel.get("input_selector", "")
+        def_snd = p_sel.get("send_btn_selector", "")
+        def_msg = p_sel.get("msg_selector", "")
+        def_stp = p_sel.get("stop_btn_selector", "")
+
+        self.edit_input = QLineEdit(self._dict.get("dom_input_selector") or def_in)
+        self.edit_input.setPlaceholderText(def_in)
+
+        self.edit_send = QLineEdit(self._dict.get("dom_send_btn_selector") or def_snd)
+        self.edit_send.setPlaceholderText(def_snd)
+
+        self.edit_msg = QLineEdit(self._dict.get("dom_msg_selector") or def_msg)
+        self.edit_msg.setPlaceholderText(def_msg)
+
+        self.edit_stop = QLineEdit(self._dict.get("dom_stop_btn_selector") or def_stp)
+        self.edit_stop.setPlaceholderText(def_stp)
+
+        form_layout.addRow("Input Box Selector:", self.edit_input)
+        form_layout.addRow("Send Button Selector:", self.edit_send)
+        form_layout.addRow("Message Selector:", self.edit_msg)
+        form_layout.addRow("Stop Button Selector:", self.edit_stop)
+        container_layout.addLayout(form_layout)
+
+        # 3. Action Buttons (Row 1: Save as Default, Reset Default)
+        row1 = QHBoxLayout()
+        self.btn_save = QPushButton("💾 Save as Default")
+        self.btn_save.setToolTip("Save current custom selectors as system default in cdp_selectors.json")
+        self.btn_save.clicked.connect(self.on_save_as_default)
+
+        self.btn_reset = QPushButton("🔄 Reset to Default")
+        self.btn_reset.setToolTip("Reset selector input fields to factory defaults")
+        self.btn_reset.clicked.connect(self.on_reset_default)
+
+        row1.addWidget(self.btn_save)
+        row1.addWidget(self.btn_reset)
+        container_layout.addLayout(row1)
+
+        # 4. Sharing Buttons (Row 2: Export JSON File, Import JSON File)
+        row2 = QHBoxLayout()
+        self.btn_copy = QPushButton("📤 Export JSON File")
+        self.btn_copy.setToolTip("Export selector settings to a .json file to easily share with others")
+        self.btn_copy.clicked.connect(self.on_copy_json)
+
+        self.btn_import = QPushButton("📥 Import JSON File")
+        self.btn_import.setToolTip("Import selector settings from a .json file")
+        self.btn_import.clicked.connect(self.on_import_json)
+
+        row2.addWidget(self.btn_copy)
+        row2.addWidget(self.btn_import)
+        container_layout.addLayout(row2)
+
+        main_layout.addWidget(self.container)
+
+        # Initial visibility
+        self.container.setVisible(init_checked)
+        self.switch.clicked.connect(self.on_toggle_switch)
+
+    def on_toggle_switch(self, *args):
+        self.container.setVisible(self.switch.isChecked())
+        win = self.window()
+        if win:
+            win.adjustSize()
+
+    def updateValues(self):
+        """Called automatically by autoinitdialog on Save."""
+        return {
+            "use_custom_dom": self.switch.isChecked(),
+            "dom_input_selector": self.edit_input.text().strip(),
+            "dom_send_btn_selector": self.edit_send.text().strip(),
+            "dom_msg_selector": self.edit_msg.text().strip(),
+            "dom_stop_btn_selector": self.edit_stop.text().strip(),
+        }
+
+    def on_save_as_default(self):
+        input_sel = self.edit_input.text().strip()
+        send_sel = self.edit_send.text().strip()
+        msg_sel = self.edit_msg.text().strip()
+        stop_sel = self.edit_stop.text().strip()
+
+        sel_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "defaultconfig", "cdp_selectors.json")
+        )
+        try:
+            with open(sel_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+
+        cfg = data.setdefault(self.provider_key, {})
+        if input_sel:
+            cfg["input_selector"] = input_sel
+        if send_sel:
+            cfg["send_btn_selector"] = send_sel
+        if msg_sel:
+            cfg["msg_selector"] = msg_sel
+        if stop_sel:
+            cfg["stop_btn_selector"] = stop_sel
+
+        try:
+            with open(sel_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(
+                self,
+                "Saved as Default",
+                f"Successfully saved selectors for {self.provider_key.upper()} as system default in cdp_selectors.json!",
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Failed to save default selectors: {e}")
+
+    def on_reset_default(self):
+        from translator.cdp_core import DEFAULT_SELECTORS
+        factory = DEFAULT_SELECTORS.get(self.provider_key, {})
+        if not factory:
+            return
+
+        self.edit_input.setText(factory.get("input_selector", ""))
+        self.edit_send.setText(factory.get("send_btn_selector", ""))
+        self.edit_msg.setText(factory.get("msg_selector", ""))
+        self.edit_stop.setText(factory.get("stop_btn_selector", ""))
+
+        QMessageBox.information(
+            self,
+            "Reset Selectors",
+            f"Selectors for {self.provider_key.upper()} have been reset to factory defaults!",
+        )
+
+    def on_copy_json(self):
+        default_filename = f"{self.provider_key}_dom_config.json"
+        try:
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save DOM Config File",
+                default_filename,
+                "JSON Files (*.json);;All Files (*.*)"
+            )
+            if not save_path:
+                return  # Cancelled: do nothing, do not touch clipboard or show popup
+
+            data = {
+                "provider": self.provider_key,
+                "input_selector": self.edit_input.text().strip(),
+                "send_btn_selector": self.edit_send.text().strip(),
+                "msg_selector": self.edit_msg.text().strip(),
+                "stop_btn_selector": self.edit_stop.text().strip(),
+            }
+            json_str = json.dumps(data, ensure_ascii=False, indent=2)
+
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(json_str)
+
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Configuration exported successfully to:\n{save_path}",
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export file: {e}")
+
+    def on_import_json(self):
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select DOM Config File to Import",
+                "",
+                "JSON Files (*.json);;All Files (*.*)"
+            )
+            if not file_path:
+                return  # Cancelled: do nothing, do not touch clipboard or show popup
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, "Read File Error", f"Failed to read file: {e}")
+            return
+
+        if not isinstance(data, dict):
+            QMessageBox.warning(self, "Import Failed", "Selected file is not a valid JSON configuration object.")
+            return
+
+        matched = False
+        if "input_selector" in data and data["input_selector"]:
+            self.edit_input.setText(str(data["input_selector"]))
+            matched = True
+        if "send_btn_selector" in data and data["send_btn_selector"]:
+            self.edit_send.setText(str(data["send_btn_selector"]))
+            matched = True
+        if "msg_selector" in data and data["msg_selector"]:
+            self.edit_msg.setText(str(data["msg_selector"]))
+            matched = True
+        if "stop_btn_selector" in data and data["stop_btn_selector"]:
+            self.edit_stop.setText(str(data["stop_btn_selector"]))
+            matched = True
+
+        if matched:
+            self.switch.setChecked(True)
+            self.on_toggle_switch(True)
+            QMessageBox.information(
+                self,
+                "Import Successful",
+                f"Successfully imported selectors for {self.provider_key.upper()} from file:\n{os.path.basename(file_path)}\n\nCustom DOM Mode has been enabled.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Import Error",
+                "JSON file does not contain recognized selector keys:\n(input_selector, send_btn_selector, msg_selector)",
+            )
