@@ -422,7 +422,7 @@ def get_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
         return s.getsockname()[1]
 
 
-def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str = "") -> tuple:
+def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str = "", target_url: str = "") -> tuple:
     """
     Launch Chrome on an available debug port.
     Returns (proc, actual_port).
@@ -451,6 +451,8 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         "--disable-extensions",
         "--disable-default-apps"
     ]
+    if target_url:
+        cmd.append(target_url)
     flags = 0x00000008 if sys.platform == "win32" else 0
     proc = subprocess.Popen(cmd, creationflags=flags)
 
@@ -497,9 +499,13 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 target_tab = page_tabs[0]
                 ws_url = target_tab.get("webSocketDebuggerUrl")
                 if ws_url:
-                    temp_ws = SimpleWebSocket(ws_url)
-                    temp_ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
-                    temp_ws.close()
+                    try:
+                        temp_ws = SimpleWebSocket(ws_url, timeout=2.0)
+                        temp_ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
+                        temp_ws.recv()
+                        temp_ws.close()
+                    except Exception:
+                        pass
                 for extra in page_tabs[1:]:
                     try:
                         urllib.request.urlopen(

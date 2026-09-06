@@ -128,18 +128,18 @@ class BaseCDPTranslator(basetrans):
     def connect_cdp(self):
         if self.cdp.is_alive(self.debug_port):
             return
-        proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""))
+        proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""), target_url=self.target_url)
         self.debug_port = port
         if proc:
             self.browser_proc = proc
         ws_url = connect_to_tab(self.debug_port, self.target_domain, self.target_url)
         self.cdp.connect(ws_url)
-        for _ in range(12):
+        for _ in range(15):
             try:
                 cur_url = self.cdp.evaluate_js("window.location.href") or ""
                 if self.target_domain in cur_url:
                     break
-                elif "about:blank" in cur_url or not cur_url:
+                else:
                     self.cdp.execute("Page.navigate", {"url": self.target_url})
             except Exception:
                 pass
