@@ -256,6 +256,14 @@ class BaseCDPTranslator(basetrans):
                     task.done_event.set()
                     continue
 
+                task_age = time.time() - getattr(task, "created_at", time.time())
+                if task_age > 20.0:
+                    cdp_log(f"[{self.provider_name}] Dropping stale queued task (queued {task_age:.1f}s ago): {task.content[:40]}...")
+                    task.cancelled = True
+                    task.result = ""
+                    task.done_event.set()
+                    continue
+
                 try:
                     cdp_log(f"[{self.provider_name}] Processing task: {task.content[:40]}...")
                     alive = self.cdp.is_alive(self.debug_port)
@@ -269,14 +277,24 @@ class BaseCDPTranslator(basetrans):
                         except Exception as e:
                             cdp_log(f"[{self.provider_name}] Connect error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Connect error: {e}")
+                            task.result = ""
+                            continue
+
                     if not self.is_ready:
-                        cdp_log(f"[{self.provider_name}] Waiting for ready and login...")
+                        cdp_log(f"[{self.provider_name}] Checking page readiness...")
+                        ready_ok = False
                         try:
-                            ready_ok = self.wait_for_ready_and_login(timeout_sec=25)
+                            ready_ok = self.wait_for_ready_and_login(timeout_sec=3)
                             cdp_log(f"[{self.provider_name}] wait_for_ready_and_login result: {ready_ok}")
                         except Exception as e:
                             cdp_log(f"[{self.provider_name}] Not ready error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Not ready: {e}")
+
+                        if not ready_ok:
+                            cdp_log(f"[{self.provider_name}] Page not ready yet (loading/auth). Skipping task to avoid queue blockage.")
+                            task.result = ""
+                            continue
+
                     self.cdp.disable_interaction()
                     self.wait_until_idle()
                     if task.cancelled:
@@ -535,7 +553,8 @@ class BaseCDPTranslator(basetrans):
                 dropped.done_event.set()
             self.task_queue.append(task)
             self.queue_event.set()
-        if not task.done_event.wait(timeout=35.0):
+        if not task.done_event.wait(timeout=25.0):
+            task.cancelled = True
             msg = f"[{self.provider_name}] Translation timed out for: {content[:50]}..."
             cdp_log(msg)
             print(msg)

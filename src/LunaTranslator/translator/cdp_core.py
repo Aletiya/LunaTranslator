@@ -239,6 +239,7 @@ class TranslationTask:
         self.done_event = threading.Event()
         self.result = ""
         self.cancelled = False
+        self.created_at = time.time()
 
 
 SHIELD_JS = (
@@ -682,7 +683,7 @@ DEFAULT_SELECTORS = {
         "url": "https://chatgpt.com/",
         "profile": "chatgpt_profile",
         "default_port": 9223,
-        "input_selector": "#prompt-textarea, [contenteditable='true']",
+        "input_selector": "#prompt-textarea, [contenteditable='true'], div[id*='prompt-textarea'], textarea",
         "send_btn_selector": "button[data-testid='send-button'], button[aria-label*='Send' i], button[type='submit']",
         "stop_btn_selector": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
         "msg_selector": "[data-message-author-role='assistant'], article [data-message-author-role='assistant']",
