@@ -63,3 +63,5 @@ src/DirectLiveCaptions
 *.onnx
 src/LunaTranslator/defaultconfig/llama.cpp.version.json
 
+
+dist/
