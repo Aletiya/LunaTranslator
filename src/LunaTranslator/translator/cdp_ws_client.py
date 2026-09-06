@@ -78,14 +78,18 @@ class BaseCDPTranslator(basetrans):
     def warmup(self):
         if not getattr(self, "using", True):
             return
+        cdp_log(f"[{self.provider_name}] warmup() triggered")
         def _bg():
             try:
                 if not getattr(self, "using", True):
                     return
+                cdp_log(f"[{self.provider_name}] warmup bg thread calling connect_cdp...")
                 self.connect_cdp()
+                cdp_log(f"[{self.provider_name}] warmup bg thread calling wait_for_ready_and_login...")
                 self.wait_for_ready_and_login(timeout_sec=15)
-            except Exception:
-                pass
+                cdp_log(f"[{self.provider_name}] warmup bg thread finished, is_ready={self.is_ready}")
+            except Exception as e:
+                cdp_log(f"[{self.provider_name}] warmup bg thread error: {e}\n{traceback.format_exc()}")
         threading.Thread(target=_bg, daemon=True).start()
 
 
@@ -254,7 +258,9 @@ class BaseCDPTranslator(basetrans):
 
                 try:
                     cdp_log(f"[{self.provider_name}] Processing task: {task.content[:40]}...")
-                    if not self.cdp.is_alive(self.debug_port):
+                    alive = self.cdp.is_alive(self.debug_port)
+                    cdp_log(f"[{self.provider_name}] CDP alive status: {alive}, is_ready: {self.is_ready}")
+                    if not alive:
                         cdp_log(f"[{self.provider_name}] CDP not alive on port {self.debug_port}, reconnecting...")
                         self.cdp.disconnect()
                         self.is_ready = False

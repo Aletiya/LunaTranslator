@@ -6,7 +6,6 @@ import re
 import socket
 import struct
 import base64
-import urllib.request
 import urllib.parse
 import subprocess
 import threading
@@ -476,16 +475,38 @@ def is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+def cdp_http_get_json(port: int, path: str, timeout: float = 2.0):
+    """Zero-dependency raw TCP socket HTTP GET returning parsed JSON."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(("127.0.0.1", port))
+            req = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nUser-Agent: LunaTranslator-CDP\r\n\r\n"
+            s.sendall(req.encode("ascii"))
+            data = bytearray()
+            while True:
+                try:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                except Exception:
+                    break
+        idx = data.find(b"\r\n\r\n")
+        if idx == -1:
+            return None
+        body_part = data[idx + 4:].decode("utf-8", errors="replace")
+        return json.loads(body_part)
+    except Exception:
+        return None
+
+
 def is_browser_alive_on_port(port: int) -> bool:
     """Check if a CDP browser is already listening on this port."""
     if not is_port_listening(port):
         return False
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            return resp.status == 200
-    except Exception:
-        return True
+    data = cdp_http_get_json(port, "/json/version", timeout=1.5)
+    return data is not None and "Browser" in data
 
 
 def get_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
@@ -503,6 +524,7 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
     """
     with _browser_launch_lock:
         if is_port_listening(debug_port):
+            cdp_log(f"ensure_browser_launched: port {debug_port} is ALREADY listening, reusing existing browser")
             return None, debug_port
 
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile"))
@@ -511,6 +533,7 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         os.makedirs(profile_path, exist_ok=True)
 
         browser_exe = get_browser_path(chrome_path)
+        cdp_log(f"ensure_browser_launched: starting {browser_exe} on port {debug_port}, profile={profile_path}")
         cmd = [
             browser_exe,
             f"--remote-debugging-port={debug_port}",
@@ -535,40 +558,56 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         start_time = time.time()
         while time.time() - start_time < 15:
             if is_port_listening(debug_port):
+                cdp_log(f"ensure_browser_launched: port {debug_port} became listening after {round(time.time() - start_time, 2)}s")
                 return proc, debug_port
             time.sleep(0.4)
+        cdp_log(f"ensure_browser_launched: WARNING - port {debug_port} NOT listening after 15s timeout!")
         return proc, debug_port
 
 
 def _close_tab(debug_port: int, tab_id: str):
-    for method in ("PUT", "GET"):
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/close/{tab_id}", method=method)
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                return
-        except Exception:
-            pass
+    """Zero-dependency raw TCP socket call to close a tab."""
+    if not tab_id:
+        return
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(("127.0.0.1", debug_port))
+            req = f"GET /json/close/{tab_id} HTTP/1.1\r\nHost: 127.0.0.1:{debug_port}\r\nConnection: close\r\n\r\n"
+            s.sendall(req.encode("ascii"))
+            s.recv(1024)
+    except Exception:
+        pass
 
 
 def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
-    """Find or create a tab for target_domain. Returns webSocketDebuggerUrl. Guarantees single tab."""
+    """Find or create a tab for target_domain via raw socket. Returns webSocketDebuggerUrl. Guarantees single tab."""
     target_tab = None
     start_wait = time.time()
     navigated = False
+    cdp_log(f"connect_to_tab: looking for domain='{target_domain}' on port {debug_port} (raw socket HTTP)")
 
+    iteration = 0
     while time.time() - start_wait < 15:
+        iteration += 1
+        elapsed = round(time.time() - start_wait, 2)
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/list")
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                tabs = json.loads(resp.read().decode("utf-8"))
+            tabs = cdp_http_get_json(debug_port, "/json/list", timeout=2.5)
+            if not tabs or not isinstance(tabs, list):
+                time.sleep(0.4)
+                continue
 
             page_tabs = [t for t in tabs if t.get("type") == "page"]
+            tab_info = [f"[id={t.get('id', '')[:8]}, type={t.get('type')}, url={t.get('url', '')[:50]}]" for t in tabs]
+            cdp_log(f"connect_to_tab iter #{iteration} (+{elapsed}s): total={len(tabs)} tabs, pages={len(page_tabs)}: {tab_info}")
 
             matched_tabs = [t for t in page_tabs if target_domain in t.get("url", "")]
             if matched_tabs:
                 target_tab = matched_tabs[0]
+                cdp_log(f"connect_to_tab iter #{iteration}: MATCHED target_tab id={target_tab.get('id')}, url={target_tab.get('url')}")
                 for extra in page_tabs:
                     if extra.get("id") != target_tab.get("id"):
+                        cdp_log(f"connect_to_tab: closing extra page tab {extra.get('id')}")
                         _close_tab(debug_port, extra.get("id"))
                 break
 
@@ -576,6 +615,7 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 if not navigated:
                     target_tab = page_tabs[0]
                     ws_url = target_tab.get("webSocketDebuggerUrl")
+                    cdp_log(f"connect_to_tab iter #{iteration}: navigating first tab {target_tab.get('id')} to {target_url}")
                     if ws_url:
                         try:
                             temp_ws = SimpleWebSocket(ws_url, timeout=2.5)
@@ -583,41 +623,42 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                             temp_ws.recv()
                             temp_ws.close()
                             navigated = True
-                        except Exception:
-                            pass
+                            cdp_log(f"connect_to_tab iter #{iteration}: Page.navigate command sent successfully")
+                        except Exception as ne:
+                            cdp_log(f"connect_to_tab iter #{iteration}: Page.navigate error: {ne}")
                     for extra in page_tabs[1:]:
                         _close_tab(debug_port, extra.get("id"))
                 time.sleep(0.4)
                 continue
-        except Exception:
-            pass
+        except Exception as e:
+            cdp_log(f"connect_to_tab iter #{iteration} (+{elapsed}s) ERROR: {type(e).__name__}: {e}")
         time.sleep(0.4)
 
     if not target_tab:
+        cdp_log(f"connect_to_tab FAILED after {round(time.time() - start_wait, 2)}s on port {debug_port} for domain {target_domain}")
         raise RuntimeError(f"Could not locate a browser tab for {target_domain} on port {debug_port}")
 
     ws_url = target_tab.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError(f"Browser tab lacks webSocketDebuggerUrl for {target_domain}")
 
+    cdp_log(f"connect_to_tab SUCCESS: ws_url={ws_url}")
     return ws_url
 
 
 def close_duplicate_tabs(debug_port: int, keep_tab_id: str):
-    """Close any extra page tabs except keep_tab_id."""
+    """Close any extra page tabs except keep_tab_id using raw socket."""
     if not keep_tab_id:
         return
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/list")
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
-            all_tabs = json.loads(resp.read().decode("utf-8"))
-        for t in all_tabs:
+        tabs = cdp_http_get_json(debug_port, "/json/list", timeout=1.5)
+        if not tabs or not isinstance(tabs, list):
+            return
+        for t in tabs:
             if t.get("type") == "page" and t.get("id") != keep_tab_id:
                 _close_tab(debug_port, t.get("id"))
     except Exception:
         pass
-
-
 # =========================================================================
 # Web UI Maintenance & DOM Selector Configuration
 # =========================================================================
