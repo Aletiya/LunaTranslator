@@ -11,25 +11,9 @@ import subprocess
 import threading
 import collections
 
-_log_lock = threading.Lock()
-
 def cdp_log(msg: str):
-    """Thread-safe persistent logging to cache/cdp_debug.log."""
-    try:
-        import gobject
-        log_file = gobject.getcachedir("cdp_debug.log")
-    except Exception:
-        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "cache"))
-        os.makedirs(base, exist_ok=True)
-        log_file = os.path.join(base, "cdp_debug.log")
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {msg}\n"
-    try:
-        with _log_lock:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(line)
-    except Exception:
-        pass
+    """Standard console logging for CDP operations (active when running via LunaTranslator_debug.bat)."""
+    print(f"[CDP] {msg}")
 
 _job_object = None
 
@@ -525,7 +509,6 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
     """
     with _browser_launch_lock:
         if is_port_listening(debug_port):
-            cdp_log(f"ensure_browser_launched: port {debug_port} is ALREADY listening, reusing existing browser")
             return None, debug_port
 
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile"))
@@ -534,7 +517,7 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         os.makedirs(profile_path, exist_ok=True)
 
         browser_exe = get_browser_path(chrome_path)
-        cdp_log(f"ensure_browser_launched: starting {browser_exe} on port {debug_port}, profile={profile_path}")
+        cdp_log(f"Starting browser on port {debug_port} (profile={profile_name})")
         cmd = [
             browser_exe,
             f"--remote-debugging-port={debug_port}",
@@ -554,15 +537,14 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
         flags = 0x00000008 if sys.platform == "win32" else 0
         proc = subprocess.Popen(cmd, creationflags=flags)
         assign_proc_to_job(proc)
-        cdp_log(f"Launched browser PID {getattr(proc, 'pid', None)} on port {debug_port}")
 
         start_time = time.time()
         while time.time() - start_time < 15:
             if is_port_listening(debug_port):
-                cdp_log(f"ensure_browser_launched: port {debug_port} became listening after {round(time.time() - start_time, 2)}s")
+                cdp_log(f"Browser ready on port {debug_port} (PID {getattr(proc, 'pid', None)})")
                 return proc, debug_port
             time.sleep(0.4)
-        cdp_log(f"ensure_browser_launched: WARNING - port {debug_port} NOT listening after 15s timeout!")
+        cdp_log(f"WARNING: port {debug_port} not listening after 15s timeout")
         return proc, debug_port
 
 
@@ -586,12 +568,8 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
     target_tab = None
     start_wait = time.time()
     navigated = False
-    cdp_log(f"connect_to_tab: looking for domain='{target_domain}' on port {debug_port} (raw socket HTTP)")
 
-    iteration = 0
     while time.time() - start_wait < 15:
-        iteration += 1
-        elapsed = round(time.time() - start_wait, 2)
         try:
             tabs = cdp_http_get_json(debug_port, "/json/list", timeout=2.5)
             if not tabs or not isinstance(tabs, list):
@@ -599,16 +577,11 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 continue
 
             page_tabs = [t for t in tabs if t.get("type") == "page"]
-            tab_info = [f"[id={t.get('id', '')[:8]}, type={t.get('type')}, url={t.get('url', '')[:50]}]" for t in tabs]
-            cdp_log(f"connect_to_tab iter #{iteration} (+{elapsed}s): total={len(tabs)} tabs, pages={len(page_tabs)}: {tab_info}")
-
             matched_tabs = [t for t in page_tabs if target_domain in t.get("url", "")]
             if matched_tabs:
                 target_tab = matched_tabs[0]
-                cdp_log(f"connect_to_tab iter #{iteration}: MATCHED target_tab id={target_tab.get('id')}, url={target_tab.get('url')}")
                 for extra in page_tabs:
                     if extra.get("id") != target_tab.get("id"):
-                        cdp_log(f"connect_to_tab: closing extra page tab {extra.get('id')}")
                         _close_tab(debug_port, extra.get("id"))
                 break
 
@@ -616,7 +589,6 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 if not navigated:
                     target_tab = page_tabs[0]
                     ws_url = target_tab.get("webSocketDebuggerUrl")
-                    cdp_log(f"connect_to_tab iter #{iteration}: navigating first tab {target_tab.get('id')} to {target_url}")
                     if ws_url:
                         try:
                             temp_ws = SimpleWebSocket(ws_url, timeout=2.5)
@@ -624,26 +596,24 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                             temp_ws.recv()
                             temp_ws.close()
                             navigated = True
-                            cdp_log(f"connect_to_tab iter #{iteration}: Page.navigate command sent successfully")
-                        except Exception as ne:
-                            cdp_log(f"connect_to_tab iter #{iteration}: Page.navigate error: {ne}")
+                        except Exception:
+                            pass
                     for extra in page_tabs[1:]:
                         _close_tab(debug_port, extra.get("id"))
                 time.sleep(0.4)
                 continue
-        except Exception as e:
-            cdp_log(f"connect_to_tab iter #{iteration} (+{elapsed}s) ERROR: {type(e).__name__}: {e}")
+        except Exception:
+            pass
         time.sleep(0.4)
 
     if not target_tab:
-        cdp_log(f"connect_to_tab FAILED after {round(time.time() - start_wait, 2)}s on port {debug_port} for domain {target_domain}")
+        cdp_log(f"Could not locate browser tab for {target_domain} on port {debug_port}")
         raise RuntimeError(f"Could not locate a browser tab for {target_domain} on port {debug_port}")
 
     ws_url = target_tab.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError(f"Browser tab lacks webSocketDebuggerUrl for {target_domain}")
 
-    cdp_log(f"connect_to_tab SUCCESS: ws_url={ws_url}")
     return ws_url
 
 
@@ -753,12 +723,11 @@ class CDPSession:
 
     def connect(self, ws_url: str, timeout: float = 30):
         self.disconnect()
-        cdp_log(f"[{self.provider_name}] Connecting to tab CDP: {ws_url}")
         self.ws = SimpleWebSocket(ws_url, timeout=timeout)
         self.execute("Page.enable")
         self.execute("Runtime.enable")
         time.sleep(0.3)
-        cdp_log(f"[{self.provider_name}] CDP connected and enabled")
+        cdp_log(f"[{self.provider_name}] Connected on port {self.debug_port}")
 
     def disconnect(self):
         with self._lock:
@@ -768,7 +737,6 @@ class CDPSession:
                 except Exception:
                     pass
                 self.ws = None
-                cdp_log(f"[{self.provider_name}] CDP disconnected")
 
     @property
     def connected(self) -> bool:
@@ -790,8 +758,7 @@ class CDPSession:
                     continue
                 try:
                     data = json.loads(raw)
-                except Exception as e:
-                    cdp_log(f"[{self.provider_name}] JSONDecodeError on raw frame: {e} | len={len(raw)}")
+                except Exception:
                     continue
                 if data.get("id") == call_id:
                     if "error" in data:

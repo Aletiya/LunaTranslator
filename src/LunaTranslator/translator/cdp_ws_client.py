@@ -78,18 +78,14 @@ class BaseCDPTranslator(basetrans):
     def warmup(self):
         if not getattr(self, "using", True):
             return
-        cdp_log(f"[{self.provider_name}] warmup() triggered")
         def _bg():
             try:
                 if not getattr(self, "using", True):
                     return
-                cdp_log(f"[{self.provider_name}] warmup bg thread calling connect_cdp...")
                 self.connect_cdp()
-                cdp_log(f"[{self.provider_name}] warmup bg thread calling wait_for_ready_and_login...")
                 self.wait_for_ready_and_login(timeout_sec=15)
-                cdp_log(f"[{self.provider_name}] warmup bg thread finished, is_ready={self.is_ready}")
             except Exception as e:
-                cdp_log(f"[{self.provider_name}] warmup bg thread error: {e}\n{traceback.format_exc()}")
+                print(f"[{self.provider_name}] Warmup notice: {e}")
         threading.Thread(target=_bg, daemon=True).start()
 
 
@@ -140,7 +136,6 @@ class BaseCDPTranslator(basetrans):
         with self._connect_lock:
             if self.cdp.is_alive(self.debug_port):
                 return
-            cdp_log(f"[{self.provider_name}] Launching/Connecting browser on port {self.debug_port}...")
             proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""), self.target_url)
             self.debug_port = port
             if proc:
@@ -258,54 +253,42 @@ class BaseCDPTranslator(basetrans):
 
                 task_age = time.time() - getattr(task, "created_at", time.time())
                 if task_age > 20.0:
-                    cdp_log(f"[{self.provider_name}] Dropping stale queued task (queued {task_age:.1f}s ago): {task.content[:40]}...")
+                    print(f"[{self.provider_name}] Dropping stale queued task ({task_age:.1f}s old)")
                     task.cancelled = True
                     task.result = ""
                     task.done_event.set()
                     continue
 
                 try:
-                    cdp_log(f"[{self.provider_name}] Processing task: {task.content[:40]}...")
                     alive = self.cdp.is_alive(self.debug_port)
-                    cdp_log(f"[{self.provider_name}] CDP alive status: {alive}, is_ready: {self.is_ready}")
                     if not alive:
-                        cdp_log(f"[{self.provider_name}] CDP not alive on port {self.debug_port}, reconnecting...")
                         self.cdp.disconnect()
                         self.is_ready = False
                         try:
                             self.connect_cdp()
                         except Exception as e:
-                            cdp_log(f"[{self.provider_name}] Connect error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Connect error: {e}")
                             task.result = ""
                             continue
 
                     if not self.is_ready:
-                        cdp_log(f"[{self.provider_name}] Checking page readiness...")
                         ready_ok = False
                         try:
                             ready_ok = self.wait_for_ready_and_login(timeout_sec=3)
-                            cdp_log(f"[{self.provider_name}] wait_for_ready_and_login result: {ready_ok}")
                         except Exception as e:
-                            cdp_log(f"[{self.provider_name}] Not ready error: {e}\n{traceback.format_exc()}")
                             print(f"[{self.provider_name}] Not ready: {e}")
 
                         if not ready_ok:
-                            cdp_log(f"[{self.provider_name}] Page not ready yet (loading/auth). Skipping task to avoid queue blockage.")
                             task.result = ""
                             continue
 
                     self.cdp.disable_interaction()
                     self.wait_until_idle()
                     if task.cancelled:
-                        cdp_log(f"[{self.provider_name}] Task was cancelled before execution")
                         continue
                     task.result = self._do_translate(task.content, task.srclang_obj, task.tgtlang_obj)
-                    cdp_log(f"[{self.provider_name}] Translation finished. Result len={len(task.result)}")
                 except Exception as e:
-                    err_msg = f"[{self.provider_name}] Worker error: {e}\n{traceback.format_exc()}"
-                    cdp_log(err_msg)
-                    print(err_msg)
+                    print(f"[{self.provider_name}] Worker error: {e}")
                     task.result = ""
                 finally:
                     task.done_event.set()
@@ -487,7 +470,6 @@ class BaseCDPTranslator(basetrans):
         time.sleep(0.12)
 
         if not self._verify_input():
-            cdp_log(f"[{self.provider_name}] execCommand input unverified, trying CDP Input.insertText fallback")
             self._focus_input()
             self.cdp.execute("Input.insertText", {"text": full_prompt})
             time.sleep(0.15)
@@ -555,7 +537,5 @@ class BaseCDPTranslator(basetrans):
             self.queue_event.set()
         if not task.done_event.wait(timeout=25.0):
             task.cancelled = True
-            msg = f"[{self.provider_name}] Translation timed out for: {content[:50]}..."
-            cdp_log(msg)
-            print(msg)
+            print(f"[{self.provider_name}] Translation timed out for: {content[:50]}...")
         return task.result
