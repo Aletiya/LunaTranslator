@@ -9,6 +9,7 @@ from translator.basetranslator import basetrans, GptTextWithDict
 from language import Languages
 
 from translator.cdp_core import (
+    close_duplicate_tabs,
     CDPSession,
     TranslationTask,
     load_selectors,
@@ -56,6 +57,7 @@ class BaseCDPTranslator(basetrans):
         self.queue_lock = threading.Lock()
         self.max_queue_size = 3
         self._current_window_visible = None
+        self._connect_lock = threading.Lock()
         self.queue_event = threading.Event()
         self.worker_thread = threading.Thread(target=self._queue_worker, daemon=True)
         self.worker_thread.start()
@@ -83,6 +85,9 @@ class BaseCDPTranslator(basetrans):
             except Exception:
                 pass
         threading.Thread(target=_bg, daemon=True).start()
+
+
+
 
     def start_game_watcher(self):
         def _watch():
@@ -126,31 +131,40 @@ class BaseCDPTranslator(basetrans):
             pass
 
     def connect_cdp(self):
-        if self.cdp.is_alive(self.debug_port):
-            return
-        proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""), target_url=self.target_url)
-        self.debug_port = port
-        if proc:
-            self.browser_proc = proc
-        ws_url = connect_to_tab(self.debug_port, self.target_domain, self.target_url)
-        self.cdp.connect(ws_url)
-        for _ in range(15):
+        with self._connect_lock:
+            if self.cdp.is_alive(self.debug_port):
+                return
+            proc, port = ensure_browser_launched(self.debug_port, self.profile_name, self.config.get("chromepath", ""), self.target_url)
+            self.debug_port = port
+            if proc:
+                self.browser_proc = proc
+            ws_url = connect_to_tab(self.debug_port, self.target_domain, self.target_url)
+            self.cdp.connect(ws_url)
+            for _ in range(15):
+                try:
+                    cur_url = self.cdp.evaluate_js("window.location.href") or ""
+                    if self.target_domain in cur_url:
+                        break
+                    elif "about:blank" in cur_url or "chrome://" in cur_url or not cur_url:
+                        self.cdp.execute("Page.navigate", {"url": self.target_url})
+                except Exception:
+                    pass
+                time.sleep(0.4)
+
             try:
-                cur_url = self.cdp.evaluate_js("window.location.href") or ""
-                if self.target_domain in cur_url:
-                    break
-                else:
-                    self.cdp.execute("Page.navigate", {"url": self.target_url})
+                keep_id = ws_url.split('/')[-1] if ws_url else ""
+                close_duplicate_tabs(self.debug_port, keep_id)
             except Exception:
                 pass
-            time.sleep(0.4)
 
-        target_visible = bool(self.config.get("show_browser", True))
-        proc_pid = getattr(self.browser_proc, "pid", None)
-        set_window_visibility(provider_name=self.provider_name, visible=target_visible, pid=proc_pid, port=self.debug_port)
-        self._current_window_visible = target_visible
+            target_visible = bool(self.config.get("show_browser", True))
+            proc_pid = getattr(self.browser_proc, "pid", None)
+            if not target_visible:
+                set_window_visibility(provider_name=self.provider_name, visible=target_visible, pid=proc_pid, port=self.debug_port)
+            self._current_window_visible = target_visible
 
     def wait_for_ready_and_login(self, timeout_sec=25):
+        self._refresh_selectors()
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         ready_js = (
             "(() => {"
@@ -235,7 +249,6 @@ class BaseCDPTranslator(basetrans):
                     task.done_event.set()
                     continue
 
-                self.cdp.disable_interaction()
                 try:
                     if not self.cdp.is_alive(self.debug_port):
                         self.cdp.disconnect()
@@ -249,6 +262,7 @@ class BaseCDPTranslator(basetrans):
                             self.wait_for_ready_and_login(timeout_sec=25)
                         except Exception as e:
                             print(f"[{self.provider_name}] Not ready: {e}")
+                    self.cdp.disable_interaction()
                     self.wait_until_idle()
                     if task.cancelled:
                         continue
@@ -270,6 +284,7 @@ class BaseCDPTranslator(basetrans):
             f"const el = document.querySelector({input_sel});"
             "if (el) {"
             "el.focus();"
+            "try { el.click(); } catch(e) {}"
             "if (el.isContentEditable) {"
             "const sel = window.getSelection();"
             "if (sel) {"
@@ -409,7 +424,25 @@ class BaseCDPTranslator(basetrans):
         self._clear_input()
         time.sleep(0.08)
         self.cdp.execute("Input.insertText", {"text": full_prompt})
-        time.sleep(0.2)
+        time.sleep(0.15)
+        if not self._verify_input():
+            input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
+            inject_js = (
+                "(() => {"
+                f"const el = document.querySelector({input_sel});"
+                "if (el) {"
+                f"if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = {json.dumps(full_prompt)};"
+                f"else el.innerText = {json.dumps(full_prompt)};"
+                "el.dispatchEvent(new Event('input', { bubbles: true }));"
+                "el.dispatchEvent(new Event('change', { bubbles: true }));"
+                "return true;"
+                "}"
+                "return false;"
+                "})()"
+            )
+            self.cdp.evaluate_js(inject_js)
+            time.sleep(0.1)
+
         self._send_message()
         time.sleep(1.0)
 

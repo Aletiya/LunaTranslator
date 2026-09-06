@@ -1466,7 +1466,7 @@ class BASEOBJECT(QObject):
             return
         if widget == self.translation_ui:
             NativeUtils.SetWindowInTaskbar(
-                int(widget.winId()), globalconfig.get("showintab", False), True
+                int(widget.winId()), globalconfig.get("showintab", True), True
             )
             return
         if self.__dontshowintaborsetbackdrop(widget):
@@ -1700,7 +1700,7 @@ class BASEOBJECT(QObject):
 
         self.translation_ui = TranslatorWindow()
         NativeUtils.SetWindowInTaskbar(
-            int(self.translation_ui.winId()), globalconfig.get("showintab", False), True
+            int(self.translation_ui.winId()), globalconfig.get("showintab", True), True
         )
         if not globalconfig.get("startupautohide", False):
             self.translation_ui.show()

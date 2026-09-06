@@ -31,7 +31,7 @@
     "default_port": 9222,
     "input_selector": "textarea.chat-input, textarea[placeholder*='DeepSeek'], textarea",
     "send_btn_selector": "div[class*='ds-button--primary'][class*='ds-button--circle']:not([class*='floating']):not([class*='disabled']), div[class*='ds-button--primary']:not([class*='floating']), div[class*='send-button'], button[type='submit']",
-    "stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i], div[class*='stop']",
+    "stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i]",
     "msg_selector": ".ds-markdown, article",
     "send_key_modifiers": 0
   }

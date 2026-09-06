@@ -254,35 +254,29 @@ def find_browser_hwnds_by_pid_or_port(pid: int = None, port: int = None, provide
         user32 = ctypes.windll.user32
 
         target_pid = pid or (get_pid_from_port(port) if port else None)
-        pids = set()
-        if target_pid:
-            
-            pids = get_child_pids(target_pid)
+        if not target_pid:
+            return []
+        pids = get_child_pids(target_pid)
+        if not pids:
+            return []
 
         found_hwnds = []
-        kw = provider_name.lower() if provider_name else ""
+        my_pid = os.getpid()
 
         def enum_windows_callback(hwnd, extra):
-            matched = False
-            if pids:
-                w_pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
-                if w_pid.value in pids:
-                    buf = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(hwnd, buf, 256)
-                    title_len = user32.GetWindowTextLengthW(hwnd)
-                    # Only match real top-level browser window (Chrome_WidgetWin_1 with title)
-                    # Never match Chrome_WidgetWin_0 (hidden black dummy/GPU context window)
-                    if buf.value == "Chrome_WidgetWin_1" and title_len > 0:
-                        matched = True
-            elif kw:
-                length = user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buff = ctypes.create_unicode_buffer(length + 1)
-                    user32.GetWindowTextW(hwnd, buff, length + 1)
-                    if kw in buff.value.lower():
-                        matched = True
-            if matched and hwnd not in found_hwnds:
+            w_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
+            if w_pid.value == my_pid:
+                return 1
+            if w_pid.value not in pids:
+                return 1
+
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, buf, 256)
+            if buf.value != "Chrome_WidgetWin_1":
+                return 1
+
+            if hwnd not in found_hwnds:
                 found_hwnds.append(hwnd)
             return 1
 
@@ -305,24 +299,16 @@ def set_window_visibility(provider_name: str = "", visible: bool = True, pid: in
         user32 = ctypes.windll.user32
         hwnds = find_browser_hwnds_by_pid_or_port(pid=pid, port=port, provider_name=provider_name)
         SW_SHOWNOACTIVATE = 4
-        GWL_EXSTYLE = -20
-        WS_EX_TOOLWINDOW = 0x00000080
-        WS_EX_APPWINDOW = 0x00040000
         SWP_NOACTIVATE = 0x0010
         SWP_SHOWWINDOW = 0x0040
-        SWP_FRAMECHANGED = 0x0020
 
         for hwnd in hwnds:
-            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             if visible:
-                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, (ex_style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW)
+                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
                 pos = _saved_window_positions.get(hwnd)
                 if pos and pos[0] > -10000:
                     x, y, w, h = pos
-                else:
-                    x, y, w, h = 100, 100, 1024, 768
-                user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED)
+                    user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
             else:
                 rect = wintypes.RECT()
                 if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -330,8 +316,7 @@ def set_window_visibility(provider_name: str = "", visible: bool = True, pid: in
                     h = rect.bottom - rect.top
                     if rect.left > -10000 and w > 0 and h > 0:
                         _saved_window_positions[hwnd] = (rect.left, rect.top, w, h)
-                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, (ex_style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW)
-                user32.SetWindowPos(hwnd, 0, -32000, -32000, 1024, 768, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED)
+                user32.SetWindowPos(hwnd, 0, -32000, -32000, 1024, 768, SWP_NOACTIVATE | SWP_SHOWWINDOW)
     except Exception:
         pass
 
@@ -382,90 +367,75 @@ def format_prompt(content: str, srclang_obj, tgtlang_obj, template: str = None) 
     )
 
 
-def is_browser_alive_on_port(port: int) -> bool:
-    """Check if a CDP browser is already listening on this port."""
+def is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
-        with urllib.request.urlopen(req, timeout=0.8) as resp:
-            return resp.status == 200
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex((host, port)) == 0
     except Exception:
         return False
 
 
+def is_browser_alive_on_port(port: int) -> bool:
+    """Check if a CDP browser is already listening on this port."""
+    if not is_port_listening(port):
+        return False
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version")
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return True
+
+
 def get_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
-    """
-    Return preferred_port if free or already running our browser.
-    Otherwise, automatically probe and return next available free port to avoid conflicts.
-    """
-    if is_browser_alive_on_port(preferred_port):
-        return preferred_port
+    return preferred_port
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, preferred_port))
-            return preferred_port
-        except OSError:
-            pass
 
-    for p in range(preferred_port + 1, preferred_port + 50):
-        if is_browser_alive_on_port(p):
-            continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind((host, p))
-                return p
-            except OSError:
-                continue
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+_browser_launch_lock = threading.RLock()
 
 
 def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str = "", target_url: str = "") -> tuple:
     """
-    Launch Chrome on an available debug port.
+    Ensure Chrome is running on debug_port.
     Returns (proc, actual_port).
+    Thread-safe: only one browser launch attempt is allowed at a time.
     """
-    # 1. If a browser is ALREADY alive on debug_port, return immediately! Do not spawn another Chrome!
-    if is_browser_alive_on_port(debug_port):
-        return None, debug_port
+    with _browser_launch_lock:
+        if is_port_listening(debug_port):
+            return None, debug_port
 
-    actual_port = get_free_port(debug_port)
-    if is_browser_alive_on_port(actual_port):
-        return None, actual_port
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile"))
+        os.makedirs(base_dir, exist_ok=True)
+        profile_path = os.path.join(base_dir, profile_name)
+        os.makedirs(profile_path, exist_ok=True)
 
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "browser_profile"))
-    os.makedirs(base_dir, exist_ok=True)
-    profile_path = os.path.join(base_dir, profile_name)
-    os.makedirs(profile_path, exist_ok=True)
+        browser_exe = get_browser_path(chrome_path)
+        cmd = [
+            browser_exe,
+            f"--remote-debugging-port={debug_port}",
+            f"--user-data-dir={profile_path}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--no-restore-session-state",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=CalculateNativeWinOcclusion",
+            "--disable-extensions",
+            "--disable-default-apps"
+        ]
+        if target_url:
+            cmd.append(target_url)
+        flags = 0x00000008 if sys.platform == "win32" else 0
+        proc = subprocess.Popen(cmd, creationflags=flags)
 
-    browser_exe = get_browser_path(chrome_path)
-    cmd = [
-        browser_exe,
-        f"--remote-debugging-port={actual_port}",
-        f"--user-data-dir={profile_path}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-restore-session-state",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--disable-features=CalculateNativeWinOcclusion",
-        "--disable-extensions",
-        "--disable-default-apps"
-    ]
-    if target_url:
-        cmd.append(target_url)
-    flags = 0x00000008 if sys.platform == "win32" else 0
-    proc = subprocess.Popen(cmd, creationflags=flags)
-
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        if is_browser_alive_on_port(actual_port):
-            return proc, actual_port
-        time.sleep(0.5)
-    return proc, actual_port
+        start_time = time.time()
+        while time.time() - start_time < 15:
+            if is_port_listening(debug_port):
+                return proc, debug_port
+            time.sleep(0.4)
+        return proc, debug_port
 
 
 def _close_tab(debug_port: int, tab_id: str):
@@ -479,14 +449,15 @@ def _close_tab(debug_port: int, tab_id: str):
 
 
 def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
-    """Find or create a tab for target_domain. Returns webSocketDebuggerUrl."""
+    """Find or create a tab for target_domain. Returns webSocketDebuggerUrl. Guarantees single tab."""
     target_tab = None
     start_wait = time.time()
+    navigated = False
 
-    while time.time() - start_wait < 10:
+    while time.time() - start_wait < 15:
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/list")
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
                 tabs = json.loads(resp.read().decode("utf-8"))
 
             page_tabs = [t for t in tabs if t.get("type") == "page"]
@@ -496,34 +467,32 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
                 target_tab = matched_tabs[0]
                 for extra in page_tabs:
                     if extra.get("id") != target_tab.get("id"):
-                        _close_tab(debug_port, extra['id'])
+                        _close_tab(debug_port, extra.get("id"))
                 break
 
             if page_tabs:
-                target_tab = page_tabs[0]
-                ws_url = target_tab.get("webSocketDebuggerUrl")
-                if ws_url:
-                    try:
-                        temp_ws = SimpleWebSocket(ws_url, timeout=2.0)
-                        temp_ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
-                        temp_ws.recv()
-                        temp_ws.close()
-                    except Exception:
-                        pass
-                for extra in page_tabs[1:]:
-                    try:
-                        urllib.request.urlopen(
-                            f"http://127.0.0.1:{debug_port}/json/close/{extra['id']}", timeout=1.0
-                        )
-                    except Exception:
-                        pass
-                break
+                if not navigated:
+                    target_tab = page_tabs[0]
+                    ws_url = target_tab.get("webSocketDebuggerUrl")
+                    if ws_url:
+                        try:
+                            temp_ws = SimpleWebSocket(ws_url, timeout=2.5)
+                            temp_ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
+                            temp_ws.recv()
+                            temp_ws.close()
+                            navigated = True
+                        except Exception:
+                            pass
+                    for extra in page_tabs[1:]:
+                        _close_tab(debug_port, extra.get("id"))
+                time.sleep(0.4)
+                continue
         except Exception:
             pass
-        time.sleep(0.5)
+        time.sleep(0.4)
 
     if not target_tab:
-        raise RuntimeError(f"Could not locate a browser tab for {target_domain}")
+        raise RuntimeError(f"Could not locate a browser tab for {target_domain} on port {debug_port}")
 
     ws_url = target_tab.get("webSocketDebuggerUrl")
     if not ws_url:
@@ -542,7 +511,7 @@ def close_duplicate_tabs(debug_port: int, keep_tab_id: str):
             all_tabs = json.loads(resp.read().decode("utf-8"))
         for t in all_tabs:
             if t.get("type") == "page" and t.get("id") != keep_tab_id:
-                _close_tab(debug_port, t['id'])
+                _close_tab(debug_port, t.get("id"))
     except Exception:
         pass
 
@@ -596,7 +565,7 @@ DEFAULT_SELECTORS = {
         "default_port": 9222,
         "input_selector": "textarea.chat-input, textarea[placeholder*='DeepSeek'], textarea",
         "send_btn_selector": "div[class*='ds-button--primary'][class*='ds-button--circle']:not([class*='floating']):not([class*='disabled']), div[class*='ds-button--primary']:not([class*='floating']), div[class*='send-button'], button[type='submit']",
-        "stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i], div[class*='stop']",
+        "stop_btn_selector": "button[aria-label*='Stop' i], button[aria-label*='Dừng' i]",
         "msg_selector": ".ds-markdown, article",
         "send_key_modifiers": 0
     }
@@ -701,14 +670,9 @@ class CDPSession:
         if not self.ws:
             return False
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{debug_port}/json/version")
-            with urllib.request.urlopen(req, timeout=0.8) as resp:
-                if resp.status != 200:
-                    return False
             return self.evaluate_js("1+1") == 2
         except Exception:
             return False
-
     def disable_interaction(self):
         try:
             self.evaluate_js(SHIELD_JS)
