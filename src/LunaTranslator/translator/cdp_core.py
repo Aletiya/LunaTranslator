@@ -427,6 +427,10 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
     Launch Chrome on an available debug port.
     Returns (proc, actual_port).
     """
+    # 1. If a browser is ALREADY alive on debug_port, return immediately! Do not spawn another Chrome!
+    if is_browser_alive_on_port(debug_port):
+        return None, debug_port
+
     actual_port = get_free_port(debug_port)
     if is_browser_alive_on_port(actual_port):
         return None, actual_port
