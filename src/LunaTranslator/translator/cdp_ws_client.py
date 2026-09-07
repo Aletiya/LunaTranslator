@@ -152,7 +152,8 @@ class BaseCDPTranslator(basetrans):
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         ready_js = (
             "(() => {"
-            f"const el = document.querySelector({input_sel});"
+            f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+            "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
             "if (el) {"
             "const s = window.getComputedStyle(el);"
             "if (s.display !== 'none' && s.visibility !== 'hidden') return 'ready';"
@@ -170,7 +171,8 @@ class BaseCDPTranslator(basetrans):
                     self.is_ready = True
                     self.cdp.evaluate_js(
                         "(() => {"
-                        f"const el = document.querySelector({input_sel});"
+                        f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+                        "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
                         "if (el) {"
                         "if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') el.value = '';"
                         "else el.innerHTML = '<p><br></p>';"

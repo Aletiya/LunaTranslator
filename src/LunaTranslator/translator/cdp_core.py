@@ -644,7 +644,7 @@ DEFAULT_SELECTORS = {
         "url": "https://chatgpt.com/",
         "profile": "chatgpt_profile",
         "default_port": 9223,
-        "input_selector": "#prompt-textarea, [contenteditable='true'], textarea:not([class*='fallback']), textarea",
+        "input_selector": "#prompt-textarea, [contenteditable='true'], textarea:not([class*='fallback'])",
         "send_btn_selector": "#composer-submit-button, button[data-testid='send-button'], button[aria-label*='Send' i], button[aria-label*='Gửi' i], button.wm-composer-submitButton, button[type='submit']",
         "stop_btn_selector": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
         "msg_selector": "[data-message-author-role='assistant'], article [data-message-author-role='assistant'], div[class*='messageCopy'], .markdown",
