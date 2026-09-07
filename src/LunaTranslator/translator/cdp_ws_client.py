@@ -1,5 +1,3 @@
-import os
-import sys
 import time
 import json
 import collections
@@ -8,9 +6,7 @@ import urllib.parse
 from translator.basetranslator import basetrans, GptTextWithDict
 from language import Languages
 
-import traceback
 from translator.cdp_core import (
-    cdp_log,
     close_duplicate_tabs,
     CDPSession,
     TranslationTask,
@@ -21,17 +17,6 @@ from translator.cdp_core import (
     kill_browser,
     format_prompt,
     clean_response,
-    SimpleWebSocket,
-    DEFAULT_SELECTORS,
-    diagnose_selectors,
-    get_browser_path,
-    get_free_port,
-    is_browser_alive_on_port,
-    find_browser_hwnds_by_pid_or_port,
-    get_child_pids,
-    get_pid_from_port,
-    SHIELD_JS,
-    UNSHIELD_JS,
 )
 
 
@@ -87,9 +72,6 @@ class BaseCDPTranslator(basetrans):
             except Exception as e:
                 print(f"[{self.provider_name}] Warmup notice: {e}")
         threading.Thread(target=_bg, daemon=True).start()
-
-
-
 
     def start_game_watcher(self):
         def _watch():
@@ -447,7 +429,7 @@ class BaseCDPTranslator(basetrans):
         self._clear_input()
         time.sleep(0.06)
 
-        # Universal standard browser text injection via document.execCommand('insertText')
+        # Insert text via execCommand
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         insert_js = (
             "(() => {"

@@ -9,10 +9,9 @@ import base64
 import urllib.parse
 import subprocess
 import threading
-import collections
 
 def cdp_log(msg: str):
-    """Standard console logging for CDP operations (active when running via LunaTranslator_debug.bat)."""
+    """CDP console logging."""
     print(f"[CDP] {msg}")
 
 _job_object = None
@@ -250,7 +249,7 @@ UNSHIELD_JS = (
 
 
 def get_child_pids(parent_pid: int) -> set:
-    """Retrieve child process IDs using Win32 Toolhelp API (fast <1ms, non-deprecated)."""
+    """Get child process IDs via Toolhelp32Snapshot."""
     pids = {parent_pid}
     if sys.platform != "win32":
         return pids
@@ -461,7 +460,7 @@ def is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def cdp_http_get_json(port: int, path: str, timeout: float = 2.0):
-    """Zero-dependency raw TCP socket HTTP GET returning parsed JSON."""
+    """HTTP GET JSON request via raw socket."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
@@ -487,26 +486,18 @@ def cdp_http_get_json(port: int, path: str, timeout: float = 2.0):
 
 
 def is_browser_alive_on_port(port: int) -> bool:
-    """Check if a CDP browser is already listening on this port."""
+    """Check if debug port is listening."""
     if not is_port_listening(port):
         return False
     data = cdp_http_get_json(port, "/json/version", timeout=1.5)
     return data is not None and "Browser" in data
 
 
-def get_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
-    return preferred_port
-
-
 _browser_launch_lock = threading.RLock()
 
 
 def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str = "", target_url: str = "") -> tuple:
-    """
-    Ensure Chrome is running on debug_port.
-    Returns (proc, actual_port).
-    Thread-safe: only one browser launch attempt is allowed at a time.
-    """
+    """Ensure browser is running on debug port."""
     with _browser_launch_lock:
         if is_port_listening(debug_port):
             return None, debug_port
@@ -549,7 +540,7 @@ def ensure_browser_launched(debug_port: int, profile_name: str, chrome_path: str
 
 
 def _close_tab(debug_port: int, tab_id: str):
-    """Zero-dependency raw TCP socket call to close a tab."""
+    """Close browser tab by ID."""
     if not tab_id:
         return
     try:
@@ -564,7 +555,7 @@ def _close_tab(debug_port: int, tab_id: str):
 
 
 def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
-    """Find or create a tab for target_domain via raw socket. Returns webSocketDebuggerUrl. Guarantees single tab."""
+    """Connect or navigate to target domain tab."""
     target_tab = None
     start_wait = time.time()
     navigated = False
@@ -618,7 +609,7 @@ def connect_to_tab(debug_port: int, target_domain: str, target_url: str) -> str:
 
 
 def close_duplicate_tabs(debug_port: int, keep_tab_id: str):
-    """Close any extra page tabs except keep_tab_id using raw socket."""
+    """Close extra page tabs."""
     if not keep_tab_id:
         return
     try:
@@ -687,7 +678,7 @@ DEFAULT_SELECTORS = {
 
 
 def load_selectors(provider_key: str) -> dict:
-    """Load selectors from defaultconfig/cdp_selectors.json with fallback defaults."""
+    """Load selectors configuration."""
     cfg_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "defaultconfig", "cdp_selectors.json"
     ))
@@ -703,7 +694,7 @@ def load_selectors(provider_key: str) -> dict:
 
 
 def diagnose_selectors(cdp_session, selectors: dict) -> dict:
-    """Self-check/diagnostic helper: verifies if current webpage elements match selectors."""
+    """Verify selector match on current page."""
     report = {}
     for key in ("input_selector", "send_btn_selector", "msg_selector"):
         sel = selectors.get(key, "")
@@ -727,7 +718,7 @@ class CDPSession:
         self.execute("Page.enable")
         self.execute("Runtime.enable")
         time.sleep(0.3)
-        cdp_log(f"[{self.provider_name}] Connected on port {self.debug_port}")
+        cdp_log(f"[{self.provider_name}] CDP connected")
 
     def disconnect(self):
         with self._lock:
@@ -743,7 +734,7 @@ class CDPSession:
         return self.ws is not None
 
     def execute(self, method: str, params: dict = None, timeout: float = 25.0) -> dict:
-        """Send a CDP command and wait for its response under lock (thread-safe)."""
+        """Send CDP command and return result."""
         with self._lock:
             if not self.ws:
                 raise ConnectionResetError(f"CDP WebSocket for {self.provider_name} is not connected.")
@@ -792,6 +783,7 @@ class CDPSession:
             return self.evaluate_js("1+1") == 2
         except Exception:
             return False
+
     def disable_interaction(self):
         try:
             self.evaluate_js(SHIELD_JS)
@@ -814,15 +806,7 @@ except ImportError:
 
 
 class DOMToolsWidget(QWidget):
-    """
-    All-in-one Collapsible Advanced DOM Self-Maintenance Panel:
-    - Collapsed by default when Custom DOM Mode is OFF.
-    - Expands when turned ON to show:
-      * Comprehensive DevTools F12 guideline & attribute tips
-      * 4 LineEdit inputs for selectors (pre-filled with defaults)
-      * 4 Action buttons (Save as Default, Reset Default, Copy JSON, Import JSON)
-    - Automatically updates translatorsetting config on dialog save.
-    """
+    """DOM selector settings panel widget."""
     def __init__(self, _dict, key, provider_key="chatgpt"):
         super().__init__()
         self._dict = _dict or {}
@@ -958,7 +942,7 @@ class DOMToolsWidget(QWidget):
             win.adjustSize()
 
     def updateValues(self):
-        """Called automatically by autoinitdialog on Save."""
+        """Save selector configuration."""
         return {
             "use_custom_dom": self.switch.isChecked(),
             "dom_input_selector": self.edit_input.text().strip(),
