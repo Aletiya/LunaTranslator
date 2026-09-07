@@ -124,7 +124,7 @@ class _voiceroid_aivoice(_StatefulSubprocess):
         return self.mem[:size]
 
 
-class _NeoSpeech(_StatefulSubprocess):
+class NeoSpeech(_StatefulSubprocess):
     def __init__(self):
         super().__init__("neospeech", False)
 
@@ -354,7 +354,7 @@ class LunaSubProcess:
 
     @staticmethod
     def neospeech():
-        return _NeoSpeech()
+        return NeoSpeech()
 
     @staticmethod
     def msnaturalvoice(path, dllp, lic):

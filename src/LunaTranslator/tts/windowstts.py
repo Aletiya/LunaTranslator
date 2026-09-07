@@ -1,8 +1,7 @@
-import NativeUtils, os, threading, uuid, windows
-from LunaSubProcess import LunaSubProcess
+import NativeUtils, os, threading
+from LunaSubProcess import LunaSubProcess, NeoSpeech
 from tts.basettsclass import TTSbase, SpeechParam
 import xml.etree.ElementTree as ET
-from ctypes import c_int32
 from myutils.config import globalconfig, _TR
 
 
@@ -72,6 +71,12 @@ class TTS(TTSbase):
         for token, name in NativeUtils.SAPI.List():
             names.append(name)
             vals.append((0, token))
+        try:
+            for token, name in zip(*LunaSubProcess.neospeechlist()):
+                names.append(name)
+                vals.append((2, token))
+        except Exception:
+            pass
         return vals, names
 
     cogdll = "Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll"
@@ -91,6 +96,10 @@ class TTS(TTSbase):
 
     def checkifnatural(self, voice):
         t, path = voice
+        if t == 2:
+            if not isinstance(self._proc, NeoSpeech):
+                self._proc = LunaSubProcess.neospeech()
+                self.lastvoice = None
         if t != 1:
             return
         if self.lastvoice == path:
@@ -106,6 +115,8 @@ class TTS(TTSbase):
     def init(self):
         self.lock = threading.Lock()
         self.lastvoice = None
+        self._proc = None
+        self.checkifnatural(self.voice)
 
     def speak(self, content: str, voice_1: "tuple[int, str]", param: SpeechParam):
         t, voice = voice_1
@@ -113,6 +124,10 @@ class TTS(TTSbase):
             return NativeUtils.SAPI.Speak(content, voice, param.speed, param.pitch)
         elif t == 1:
             with self.lock:
-                content = self.createSSML(content, None, param)
                 self.checkifnatural(voice_1)
+                content = self.createSSML(content, None, param)
                 return self._proc.speak(content)
+        elif t == 2:
+            with self.lock:
+                self.checkifnatural(voice_1)
+                return self._proc.speak(content, voice, param.speed, param.pitch)

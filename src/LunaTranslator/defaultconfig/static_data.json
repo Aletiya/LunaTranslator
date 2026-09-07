@@ -202,19 +202,6 @@
                 ]
             },
             {
-                "name": "NeoSpeech",
-                "links": [
-                    {
-                        "name": "Misaki",
-                        "link": "/Resource/voice/NeoSpeech.Japanese.Misaki.zip"
-                    },
-                    {
-                        "name": "Show",
-                        "link": "/Resource/voice/NeoSpeech.TTS.NeoSpeech.Japanese.Show_v3.10.0.0.zip"
-                    }
-                ]
-            },
-            {
                 "name": "VOICEVOX",
                 "links": [
                     {

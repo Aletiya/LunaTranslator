@@ -307,10 +307,10 @@ def makescalew(profile=None):
                         ),
                         (
                             [
-                                "内联效果参数",
+                                "缩放期间保持屏幕常亮",
                                 D_getsimpleswitch(
                                     magpie_config,
-                                    "inlineParams",
+                                    "keepScreenOn",
                                 ),
                             ]
                             if isglobal
@@ -318,10 +318,21 @@ def makescalew(profile=None):
                         ),
                         (
                             [
-                                "缩放时模拟独占全屏",
+                                "模拟独占全屏",
                                 D_getsimpleswitch(
                                     magpie_config,
                                     "simulateExclusiveFullscreen",
+                                ),
+                            ]
+                            if isglobal
+                            else None
+                        ),
+                        (
+                            [
+                                "内联效果参数",
+                                D_getsimpleswitch(
+                                    magpie_config,
+                                    "inlineParams",
                                 ),
                             ]
                             if isglobal

@@ -47,21 +47,35 @@ std::optional<DWORD> TextThread::RunDectectCodePage(BYTE *data, int length)
 	}
 	else
 	{
-		auto test = [&](DWORD cp)
+		auto decode = [&](DWORD cp) -> std::optional<std::wstring>
 		{
 			auto _ = StringToWideString(UseForDetectRaw, cp);
-			if (!_)
-				return false;
-			return WideStringToString(_.value(), cp) == UseForDetectRaw;
+			if (!_ || WideStringToString(_.value(), cp) != UseForDetectRaw)
+				return {};
+			return _.value();
 		};
-		if (test(932))
+		auto countInRange = [](const std::wstring &ws, wchar_t lo, wchar_t hi)
+		{
+			return (int)std::count_if(ws.begin(), ws.end(), [lo, hi](wchar_t c) { return c >= lo && c <= hi; });
+		};
+		auto hasKana = [&](DWORD cp) -> bool
+		{
+			auto ws = decode(cp);
+			return ws && countInRange(*ws, 0x3040, 0x309F) + countInRange(*ws, 0x30A0, 0x30FF) > 1;
+		};
+		auto hasHangul = [&](DWORD cp) -> bool
+		{
+			auto ws = decode(cp);
+			return ws && countInRange(*ws, 0xAC00, 0xD7AF) > 1;
+		};
+		if (hasKana(932))
 			hp.detectedCodepage = 932;
-		else if (test(936))
-			hp.detectedCodepage = 936;
-		else if (test(950))
-			hp.detectedCodepage = 950;
-		else if (test(949))
+		else if (hasHangul(949))
 			hp.detectedCodepage = 949;
+		else if (decode(936))
+			hp.detectedCodepage = 936;
+		else if (decode(950))
+			hp.detectedCodepage = 950;
 	}
 	if (!hp.detectedCodepage)
 		return {};

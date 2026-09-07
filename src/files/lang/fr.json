@@ -800,6 +800,7 @@
     "AnkiConnect端口可能被占用，请检查并终止占用端口的进程": "Le port AnkiConnect est peut-être occupé, veuillez vérifier et mettre fin au processus qui utilise le port.",
     "请打开anki，并安装AnkiConnect插件": "Veuillez ouvrir Anki et installer le plugin AnkiConnect.",
     "请先关闭软件，然后再导入！": "Veuillez d'abord fermer le logiciel, puis procédez à l'importation !",
+    "检测到软件已在运行，是否再次启动？": "Le logiciel est déjà en cours d'exécution. Voulez-vous le lancer à nouveau ?",
     "立即保存配置": "Configuration enregistrée immédiatement",
     "其他语言": "Autres langues",
     "语言名称": "Nom de la langue",
@@ -941,5 +942,12 @@
     "触发方式": "Mode de déclenchement",
     "中键点击": "Clic du bouton du milieu",
     "聚焦": "Mise au point",
-    "锁定": "Verrouiller"
+    "锁定": "Verrouiller",
+    "社区辞书": "Dictionnaire communautaire",
+    "加载中……": "Chargement en cours……",
+    "主页": "Page d'accueil",
+    "加载失败": "Échec du chargement",
+    "下载中……": "Téléchargement en cours...",
+    "缩放期间保持屏幕常亮": "Garder l'écran allumé pendant le zoom.",
+    "模拟独占全屏": "Simulation plein écran exclusif"
 }

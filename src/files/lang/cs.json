@@ -800,6 +800,7 @@
     "AnkiConnect端口可能被占用，请检查并终止占用端口的进程": "Port AnkiConnect může být obsazený, zkontrolujte a ukončete proces, který port využívá.",
     "请打开anki，并安装AnkiConnect插件": "Otevřete prosím Anki a nainstalujte si zásuvný modul AnkiConnect.",
     "请先关闭软件，然后再导入！": "Nejprve zavřete software a poté importujte!",
+    "检测到软件已在运行，是否再次启动？": "Program je již spuštěn. Chcete ho spustit znovu?",
     "立即保存配置": "Okamžitě uložit konfiguraci",
     "其他语言": "Jiné jazyky",
     "语言名称": "Název jazyka",
@@ -941,5 +942,12 @@
     "触发方式": "Způsob spuštění",
     "中键点击": "Střední tlačítko kliknutí",
     "聚焦": "Zaměřit se",
-    "锁定": "Zámek"
+    "锁定": "Zámek",
+    "社区辞书": "Slovník komunity",
+    "加载中……": "Načítání……",
+    "主页": "Domovská stránka",
+    "加载失败": "Načítání se nezdařilo",
+    "下载中……": "Stahování...",
+    "缩放期间保持屏幕常亮": "Během přiblížení udržujte obrazovku zapnutou.",
+    "模拟独占全屏": "Simulace exkluzivního celoobrazovkového režimu"
 }
