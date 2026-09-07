@@ -283,7 +283,8 @@ class BaseCDPTranslator(basetrans):
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         js = (
             "(() => {"
-            f"const el = document.querySelector({input_sel});"
+            f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+            "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
             "if (el) {"
             "el.focus();"
             "try { el.click(); } catch(e) {}"
@@ -315,7 +316,8 @@ class BaseCDPTranslator(basetrans):
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         js = (
             "(() => {"
-            f"const el = document.querySelector({input_sel});"
+            f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+            "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
             "if (el) {"
             "el.focus();"
             "try { document.execCommand('selectAll', false, null); } catch(e) {}"
@@ -332,7 +334,8 @@ class BaseCDPTranslator(basetrans):
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         js = (
             "(() => {"
-            f"const el = document.querySelector({input_sel});"
+            f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+            "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
             "if (!el) return false;"
             "const val = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') ? el.value : (el.innerText || el.textContent);"
             "return Boolean(val && val.trim().length > 0);"
@@ -355,7 +358,13 @@ class BaseCDPTranslator(basetrans):
                 "return false;"
                 "})()"
             )
-            btn_clicked = bool(self.cdp.evaluate_js(send_js))
+            # Allow reactive frameworks (React/ProseMirror) up to 0.8s to mount the active send button
+            start_t = time.time()
+            while time.time() - start_t < 0.8:
+                if self.cdp.evaluate_js(send_js):
+                    btn_clicked = True
+                    break
+                time.sleep(0.08)
 
         time.sleep(0.12)
         if not btn_clicked or self._verify_input():
@@ -433,7 +442,8 @@ class BaseCDPTranslator(basetrans):
         input_sel = json.dumps(self.selectors.get("input_selector", "textarea"))
         insert_js = (
             "(() => {"
-            f"const el = document.querySelector({input_sel});"
+            f"const candidates = Array.from(document.querySelectorAll({input_sel}));"
+            "const el = candidates.find(c => (c.offsetWidth > 0 || c.offsetHeight > 0) && !c.className.includes('fallback')) || candidates[0];"
             "if (!el) return false;"
             "el.focus();"
             "try { document.execCommand('selectAll', false, null); } catch(e) {}"

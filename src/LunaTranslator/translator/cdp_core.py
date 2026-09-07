@@ -644,8 +644,8 @@ DEFAULT_SELECTORS = {
         "url": "https://chatgpt.com/",
         "profile": "chatgpt_profile",
         "default_port": 9223,
-        "input_selector": "#prompt-textarea, #mobile-composer-prompt, textarea, [contenteditable='true']",
-        "send_btn_selector": "button[data-testid='send-button'], button[aria-label*='Send' i], button.wm-composer-submitButton, button[type='submit']",
+        "input_selector": "#prompt-textarea, [contenteditable='true'], textarea:not([class*='fallback']), textarea",
+        "send_btn_selector": "#composer-submit-button, button[data-testid='send-button'], button[aria-label*='Send' i], button[aria-label*='Gửi' i], button.wm-composer-submitButton, button[type='submit']",
         "stop_btn_selector": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
         "msg_selector": "[data-message-author-role='assistant'], article [data-message-author-role='assistant'], div[class*='messageCopy'], .markdown",
         "send_key_modifiers": 0
@@ -657,7 +657,7 @@ DEFAULT_SELECTORS = {
         "profile": "gemini_profile",
         "default_port": 9224,
         "input_selector": ".ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']",
-        "send_btn_selector": ".send-button-container button, button[aria-label*='Send message' i], button.send-button",
+        "send_btn_selector": ".send-button-container button, button[aria-label*='Send message' i], button[aria-label*='Gửi' i], button.send-button",
         "stop_btn_selector": "button[aria-label*='Stop' i], .stop-button, mat-icon[data-mat-icon-name='stop']",
         "msg_selector": "model-response, [class*='model-response'], message-content",
         "send_key_modifiers": 2
